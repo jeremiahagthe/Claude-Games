@@ -3,6 +3,7 @@ const ESC = '\x1b'
 export class TerminalSession {
   private entered = false
   private restoredOnce = false
+  private guardsInstalled = false
 
   constructor(private stdin: NodeJS.ReadStream, private stdout: NodeJS.WriteStream) {}
 
@@ -31,6 +32,8 @@ export class TerminalSession {
   }
 
   installExitGuards(onExit: () => void): void {
+    if (this.guardsInstalled) return
+    this.guardsInstalled = true
     const bail = (code: number) => {
       this.restore()
       onExit()

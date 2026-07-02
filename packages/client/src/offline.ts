@@ -32,26 +32,30 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
   let banner: string | null = null
   let scoreboardHeld = 0
   let quit = false
+  let ended = false
 
   let { viewCols, viewRows } = viewSize(process.stdout.columns ?? 80, process.stdout.rows ?? 24)
   let fb = new FrameBuffer(viewCols, viewRows * 2)
   const renderer = new TermRenderer(detectColorMode(process.env))
-  process.stdout.on('resize', () => {
+  const onResize = () => {
     ;({ viewCols, viewRows } = viewSize(process.stdout.columns ?? 80, process.stdout.rows ?? 24))
     fb = new FrameBuffer(viewCols, viewRows * 2)
     renderer.reset()
     term.write(`${ESC}[2J`)
-  })
+    if (ended) term.write(`${ESC}[2J${ESC}[H` + finalScoreboard(room))
+  }
+  process.stdout.on('resize', onResize)
 
-  process.stdin.on('data', (chunk: Buffer) => {
+  const onData = (chunk: Buffer) => {
     for (const e of parser.feed(chunk)) {
       if (e.key === 'kitty-ack') intent.enableTier1()
       else if ((e.key === 'q' || e.key === 'esc' || e.key === 'ctrl-c') && e.kind === 'press') quit = true
       else if (e.key === 'enter' && banner) quit = true
-      else if (e.key === 'tab') scoreboardHeld = 8 // ~400ms of scoreboard per Tab press
+      else if (e.key === 'tab' && e.kind !== 'release') scoreboardHeld = 8 // ~400ms of scoreboard per Tab press
       else intent.onKey(e)
     }
-  })
+  }
+  process.stdin.on('data', onData)
 
   term.enter()
   term.installExitGuards(() => {})
@@ -79,10 +83,13 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
     }, TICK_MS)
   })
 
+  process.stdin.off('data', onData)
   if (room.finished) {
+    ended = true
     term.write(`${ESC}[2J${ESC}[H` + finalScoreboard(room))
     await new Promise<void>((r) => process.stdin.once('data', () => r()))
   }
+  process.stdout.off('resize', onResize)
   term.restore()
   process.exit(0)
 }
