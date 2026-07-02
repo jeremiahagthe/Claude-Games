@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { busyElapsedSeconds, startClaudeListener } from '../src/claude.js'
+import net from 'node:net'
 
 describe('startClaudeListener', () => {
   it('writes client.json and delivers POSTed events', async () => {
@@ -27,6 +28,24 @@ describe('startClaudeListener', () => {
     const listener = await startClaudeListener(dir)
     const res = await fetch(`http://127.0.0.1:${listener.port}/event`, { method: 'POST', body: 'not json' })
     expect(res.status).toBe(400)
+    await listener.close()
+  })
+  it('an aborted request does not crash the listener process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fragwait-'))
+    const listener = await startClaudeListener(dir)
+    // open a raw socket, send partial headers+body, then destroy mid-request
+    await new Promise<void>((resolve) => {
+      const sock = net.createConnection(listener.port, '127.0.0.1', () => {
+        sock.write('POST /event HTTP/1.1\r\ncontent-length: 100\r\n\r\n{"ev')
+        setTimeout(() => { sock.destroy(); resolve() }, 50)
+      })
+    })
+    await new Promise((r) => setTimeout(r, 100))
+    // listener still alive and serving
+    const res = await fetch(`http://127.0.0.1:${listener.port}/event`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event: 'done' }),
+    })
+    expect(res.status).toBe(200)
     await listener.close()
   })
 })

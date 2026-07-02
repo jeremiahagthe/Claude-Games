@@ -20,7 +20,10 @@ export async function startClaudeListener(dir = DEFAULT_DIR): Promise<ClaudeList
       return
     }
     let body = ''
-    req.on('data', (c) => { body += c })
+    req.on('data', (c) => {
+      body += c
+      if (body.length > 4096) { req.destroy() }
+    })
     req.on('end', () => {
       try {
         const { event } = JSON.parse(body) as { event?: string }
@@ -31,6 +34,7 @@ export async function startClaudeListener(dir = DEFAULT_DIR): Promise<ClaudeList
         res.writeHead(400).end('bad request')
       }
     })
+    req.on('error', () => { try { res.writeHead(400).end() } catch { /* socket gone */ } })
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
