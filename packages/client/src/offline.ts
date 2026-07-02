@@ -9,6 +9,7 @@ import { FrameBuffer, TermRenderer } from './framebuffer.js'
 import { drawGun } from './gun.js'
 import { KillFeed, hudRows } from './hud.js'
 import { IntentTracker } from './input/intent.js'
+import { readOsKeyTimings } from './input/os-timings.js'
 import { KeyParser } from './input/parser.js'
 import { renderView } from './raycast.js'
 import { Sfx } from './sound.js'
@@ -54,7 +55,9 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
 
   const term = new TerminalSession(process.stdin, process.stdout)
   const parser = new KeyParser()
-  const intent = new IntentTracker(() => performance.now())
+  // Measured once at startup and injected: tier-2 inference derives all of
+  // its hold/phase windows from the host's real key-repeat timings (F1).
+  const intent = new IntentTracker(() => performance.now(), { timings: readOsKeyTimings() })
   const feed = new KillFeed()
   const sfx = new Sfx({ mute: opts.mute ?? false })
   let banner: string | null = null
@@ -94,6 +97,17 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   }
   process.stdin.on('data', onData)
 
+  // Startup hint, printed BEFORE the alt screen so it survives on the normal
+  // screen after exit. The kitty probe only answers once the session is live,
+  // so tier-2 can't be known yet — on darwin the hint targets the common
+  // (Apple Terminal, tier-2) case and is harmless noise for kitty-class
+  // terminals. Non-blocking: one dim line, no prompt.
+  if (process.platform === 'darwin') {
+    process.stdout.write(
+      `${ESC}[2mtip: System Settings → Keyboard → "Delay Until Repeat" fastest + "Key Repeat Rate" fastest makes turning far more responsive; kitty/WezTerm/Ghostty/iTerm2 are smoother still.${ESC}[0m\n`,
+    )
+  }
+
   term.enter()
   term.installExitGuards(() => {})
 
@@ -118,7 +132,11 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
       for (const k of room.tick()) {
         feed.push(k, room.state)
         if (k.killerId === selfId) sfx.play('kill')
-        if (k.victimId === selfId) sfx.play('death')
+        if (k.victimId === selfId) {
+          sfx.play('death')
+          // a respawn must not drain stale turn budget/holds into the new facing
+          intent.resetTransient()
+        }
       }
 
       if (performance.now() - lastBusyPoll > 1000) {

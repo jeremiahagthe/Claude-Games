@@ -1,363 +1,636 @@
 import { describe, expect, it } from 'vitest'
+import type { PlayerInput } from '@fragwait/core'
 import { IntentTracker } from '../src/input/intent.js'
+import type { KeyEvent } from '../src/input/parser.js'
 
-function mkClock(start = 0): { now: () => number; advance: (ms: number) => void } {
+// Factory macOS timings (F1): first repeat 500ms after press, then every 83ms.
+const FACTORY = { initialDelayMs: 500, repeatIntervalMs: 83 }
+
+// Axis value emitted when one full tap quantum (0.06 rad) drains in a single
+// 20Hz tick (tick turn capacity = 2.6/20 = 0.13 rad at axis 1).
+const TAP_DRAIN = 0.06 / 0.13
+
+function mkClock(start = 0): { now: () => number; set: (ms: number) => void } {
   let t = start
-  return { now: () => t, advance: (ms) => { t += ms } }
+  return {
+    now: () => t,
+    set: (ms) => {
+      if (ms < t) throw new Error(`clock moved backwards: ${t} -> ${ms}`)
+      t = ms
+    },
+  }
 }
 
-describe('IntentTracker tier 2 (decay + tap envelope + easing)', () => {
-  it('key held while repeats arrive keeps building, decays after the adaptive decay window', () => {
-    const clock = mkClock()
-    // explicit initial decayMs=200: only governs the window before any
-    // interval has been learned for this key (see macOS-pattern test below
-    // for the adaptive behavior once repeats start flowing).
-    const it2 = new IntentTracker(clock.now, 200)
-    it2.onKey({ key: 'w', kind: 'press' })
-    const s0 = it2.sample(1).forward
-    expect(s0).toBeGreaterThan(0) // building up (attack), not an instant full-strength snap
-    clock.advance(150)
-    it2.onKey({ key: 'w', kind: 'repeat' }) // OS key-repeat refresh: interval learned = 150ms
-    clock.advance(150)
-    // decayFor now adapts: clamp(150 * 1.6 + 40, 120, 600) = 280ms; 150 < 280,
-    // so the key is still "held" and intent keeps climbing.
-    const s1 = it2.sample(2).forward
-    expect(s1).toBeGreaterThan(s0)
-    clock.advance(250)
-    // 150 + 250 = 400ms since the refresh, >= 280ms adaptive window: decayed —
-    // the envelope drops to 0 and the eased value follows it back down.
-    const s2 = it2.sample(3).forward
-    expect(s2).toBeLessThan(s1)
-    // keeps releasing toward 0 on subsequent samples (no key events arrive)
-    let last = s2
-    for (let i = 4; i <= 8; i++) {
-      const s = it2.sample(i).forward
-      expect(s).toBeLessThanOrEqual(last)
-      last = s
+function mkTracker(clock: { now: () => number }, timings = FACTORY): IntentTracker {
+  return new IntentTracker(clock.now, { timings })
+}
+
+type Sched = { t: number; key: string; kind?: KeyEvent['kind'] }
+
+// Tier-2 terminals (Apple Terminal) only ever deliver kind 'press' — the OS's
+// auto-repeats arrive as indistinguishable presses. Schedules default to that.
+function repeats(key: string, from: number, to: number, every: number): Sched[] {
+  const out: Sched[] = []
+  for (let t = from; t <= to; t += every) out.push({ t, key })
+  return out
+}
+
+// Drives a 20Hz sampling loop (ticks at 50, 100, ... untilMs), delivering the
+// scheduled key events at their exact timestamps (clock stays monotonic; an
+// event on a tick boundary lands just before that tick's sample).
+function run(
+  tracker: IntentTracker,
+  clock: { now: () => number; set: (ms: number) => void },
+  events: Sched[],
+  untilMs: number,
+): Map<number, PlayerInput> {
+  const sorted = [...events].sort((a, b) => a.t - b.t)
+  const out = new Map<number, PlayerInput>()
+  let seq = 0
+  let ei = 0
+  for (let t = 50; t <= untilMs; t += 50) {
+    while (ei < sorted.length && sorted[ei]!.t <= t) {
+      const e = sorted[ei++]!
+      clock.set(Math.max(e.t, clock.now()))
+      tracker.onKey({ key: e.key, kind: e.kind ?? 'press' })
     }
-    expect(last).toBe(0)
-  })
+    clock.set(t)
+    out.set(t, tracker.sample(++seq))
+  }
+  return out
+}
 
-  it('release is ignored in tier 2 (legacy terminals never send it)', () => {
+function at(samples: Map<number, PlayerInput>, t: number): PlayerInput {
+  const s = samples.get(t)
+  if (!s) throw new Error(`no sample at t=${t}`)
+  return s
+}
+
+describe('S1 regression — fresh movement press after a taught hold must not sawtooth (F3)', () => {
+  it('S1: w press at T0 after a previous 83ms-repeat hold: forward ≥ 0.9 for every tick in [T0+100, T0+1500]', () => {
     const clock = mkClock()
-    const it2 = new IntentTracker(clock.now, 200)
-    it2.onKey({ key: 'd', kind: 'press' })
-    it2.onKey({ key: 'd', kind: 'release' }) // some terminal quirk: ignore
-    expect(it2.sample(1).strafe).toBeGreaterThan(0) // envelope still active — release didn't zero it
-  })
-
-  it('tap (press, no repeat): sampled axis ramps down and reaches 0 by the decay window — never an instant 1→0 cliff', () => {
-    const clock = mkClock()
-    // default decayMs: 'w' is a movement key, so the unlearned window is
-    // 600ms (grown from 450ms — see the movement-continuity tests below for
-    // why), no repeat ever arrives.
-    const tracker = new IntentTracker(clock.now)
-    tracker.onKey({ key: 'w', kind: 'press' })
-    const samples: number[] = []
-    for (let i = 1; i <= 14; i++) {
-      clock.advance(50) // 20Hz sim tick
-      samples.push(tracker.sample(i).forward)
+    const tracker = mkTracker(clock)
+    const T0 = 1500
+    const events: Sched[] = [
+      // previous hold: press, first repeat at 500, steady 83ms repeats, then released
+      { t: 0, key: 'w' },
+      ...repeats('w', 500, 666, 83),
+      // fresh hold: press, the OS's 500ms initial-repeat gap, then steady repeats.
+      // Under the old adaptive-decay design the learned ~173ms window persisted
+      // across holds and the fresh press died inside the 500ms gap (F3 sawtooth).
+      { t: T0, key: 'w' },
+      ...repeats('w', T0 + 500, T0 + 1500, 83),
+    ]
+    const samples = run(tracker, clock, events, T0 + 1500)
+    // the previous hold fully expired and eased back to rest before the fresh press
+    expect(at(samples, 1450).forward).toBe(0)
+    for (let t = T0 + 100; t <= T0 + 1500; t += 50) {
+      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
     }
-    const peakIdx = samples.indexOf(Math.max(...samples))
-    expect(samples[peakIdx]).toBeGreaterThan(0.9) // does reach (close to) full strength
-    // after the peak it only ever falls, and never straight to 0 in one step
-    // (a hard 1 -> 0 cliff would show up as a drop of ~1.0 in a single sample)
-    for (let i = peakIdx + 1; i < samples.length; i++) {
-      const drop = samples[i - 1]! - samples[i]!
-      expect(drop).toBeGreaterThanOrEqual(0)
-      expect(drop).toBeLessThan(0.5) // release is capped per-tick, not instant
-    }
-    // raw envelope hits 0 at age 600ms (the movement window; taper starts at
-    // 0.75 * 600 = 450ms). The eased value trails one more tick behind
-    // (RELEASE_PER_TICK caps the final ~0.1 step), reaching exactly 0 at
-    // sample 13 (t=650ms) rather than sample 9 (the old 450ms window).
-    expect(samples[12]).toBe(0)
-    expect(samples[samples.length - 1]).toBe(0)
-  })
-
-  it('attack easing: 0 -> full within 2 samples of a fresh hold (ATTACK_PER_TICK=0.55)', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now)
-    tracker.onKey({ key: 'w', kind: 'press' })
-    const s1 = tracker.sample(1).forward
-    const s2 = tracker.sample(2).forward
-    const s3 = tracker.sample(3).forward
-    expect(s1).toBeGreaterThan(0)
-    expect(s1).toBeLessThan(1) // not an instant snap to full strength
-    expect(s2).toBe(1) // full strength reached by the 2nd sample (0.55 + 0.55, clamped)
-    expect(s3).toBe(1)
-  })
-
-  it('fast-repeat regime: after a learned ~35ms cadence stops, the envelope itself tapers through intermediate values — no 1→0 cliff before easing', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now)
-    tracker.onKey({ key: 'w', kind: 'press' }) // t=0
-    // learn a fast cadence: decayFor clamps to its 120ms floor (35*1.6+40 = 96 -> 120),
-    // which is BELOW FULL_INTENT_MS — the regime where the taper must still be reachable.
-    for (let i = 0; i < 6; i++) {
-      clock.advance(35)
-      tracker.onKey({ key: 'w', kind: 'repeat' })
-    }
-    // while repeats keep arriving, the envelope never dims (age < taper start at every sample)
-    tracker.sample(1)
-    tracker.sample(2)
-    expect(tracker.sample(3).forward).toBe(1)
-
-    // key released: no further events. decay = 120ms (floor). 'w' is a
-    // movement key, so its taper start is 0.75 * decay = 90ms (not the
-    // turn-class min(FULL_INTENT_MS, decay/2) = 60ms formula) — the taper
-    // runs age 90ms -> 120ms after the last repeat.
-    clock.advance(99) // age 99: mid-taper. envelope = 1 - (99-90)/(120-90) = 0.7.
-    const s1 = tracker.sample(4).forward
-    // |envelope - previous| = 0.3 == the release easing cap exactly, so the
-    // sample still exposes the raw envelope value directly — a cliff
-    // (envelope pinned at 1 until 120ms) would read 1.0 here.
-    expect(s1).toBeCloseTo(0.7, 5)
-
-    clock.advance(15) // age 114: envelope = 1 - 24/30 = 0.2; easing caps the drop
-    const s2 = tracker.sample(5).forward
-    expect(s2).toBeLessThan(s1)
-    expect(s2).toBeGreaterThan(0)
-
-    clock.advance(50) // age 164 >= decay: envelope 0; eased value keeps ramping down
-    let prev = s2
-    for (let i = 6; i <= 9; i++) {
-      const s = tracker.sample(i).forward
-      expect(s).toBeLessThanOrEqual(prev)
-      prev = s
-    }
-    expect(prev).toBe(0)
-  })
-
-  it('macOS hold pattern (300ms initial repeat, 35ms steady cadence): stays above ~0.4 during the initial-repeat gap and recovers to 1.0 (general hold-smoothness check)', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now) // default initial decay for 'w' (movement): 600ms
-    tracker.onKey({ key: 'w', kind: 'press' }) // t=0
-
-    let repeatAt = 300 // macOS initial repeat delay
-    let released = false
-    let seq = 0
-    const samples: number[] = []
-    for (let t = 50; t <= 900; t += 50) {
-      clock.advance(50)
-      while (!released && repeatAt <= t) {
-        tracker.onKey({ key: 'w', kind: 'repeat' })
-        repeatAt += 35 // steady-state fast repeat cadence
-        if (repeatAt > 600) released = true // key physically released ~t=600
-      }
-      samples.push(tracker.sample(++seq).forward)
-    }
-    const byTick = (t: number): number => samples[t / 50 - 1]!
-
-    // during the initial-repeat gap (before the first repeat lands at t=300),
-    // intent never craters — this is the exact regression the tap envelope fixes.
-    for (let t = 50; t < 300; t += 50) expect(byTick(t)).toBeGreaterThanOrEqual(0.4)
-
-    // once steady repeats arrive, it reaches and holds full strength
-    expect(byTick(450)).toBe(1)
-    expect(byTick(600)).toBe(1)
-
-    // after the last repeat (key released ~t=600, no more events), it ramps
-    // back down smoothly — never an instant cliff — and reaches 0. 'w' is a
-    // movement key, so its taper start is 0.75 * decayFor(key) rather than
-    // the turn-class min(FULL_INTENT_MS, decay/2); the exact tick range isn't
-    // pinned here (see the fast-repeat-regime test above for that), only
-    // that the ramp-down is monotonic and eventually settles at rest.
-    for (let t = 700; t < 900; t += 50) {
-      const cur = byTick(t)
-      const next = byTick(t + 50)
-      if (cur === 0) expect(next).toBe(0) // fully released: stays at rest
-      else expect(next).toBeLessThan(cur)
-    }
-    expect(byTick(900)).toBe(0)
-  })
-
-  it('movement continuity: macOS-default hold pattern (press at t=0, first repeat at 375ms, then 90ms repeats) never sags below 0.9 once at full speed (THE movement-continuity regression test)', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now) // default: 'w' is a movement key -> unlearned window 600ms
-    tracker.onKey({ key: 'w', kind: 'press' }) // t=0
-
-    let repeatAt = 375 // macOS initial repeat delay
-    let released = false
-    let seq = 0
-    const samples: number[] = []
-    for (let t = 50; t <= 900; t += 50) {
-      clock.advance(50)
-      while (!released && repeatAt <= t) {
-        tracker.onKey({ key: 'w', kind: 'repeat' })
-        repeatAt += 90 // macOS steady-state repeat cadence
-        if (repeatAt > 700) released = true // key physically released ~t=650-700
-      }
-      samples.push(tracker.sample(++seq).forward)
-    }
-    const byTick = (t: number): number => samples[t / 50 - 1]!
-
-    const firstFullSpeedIdx = samples.findIndex((s) => s === 1)
-    expect(firstFullSpeedIdx).toBeGreaterThanOrEqual(0) // it does reach full speed
-    // from the first full-speed sample through the last repeat (~t=650, after
-    // which no more key events arrive), the sampled forward axis never sags —
-    // this is the exact regression the movement-class taper start (0.75 *
-    // decayFor(key), bridging macOS's initial 375ms repeat gap) fixes. Before
-    // this change the taper started at 140ms, well inside the 375ms gap.
-    for (let t = (firstFullSpeedIdx + 1) * 50; t <= 650; t += 50) {
-      expect(byTick(t)).toBeGreaterThanOrEqual(0.9)
-    }
-  })
-
-  it('turn tap overshoot: a single right tap (new 350ms turn-class window) fully releases by 350ms, not the old 450ms', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now) // default: 'right' is a turn key -> unlearned window 350ms
-    tracker.onKey({ key: 'right', kind: 'press' })
-    const samples: number[] = []
-    for (let t = 50; t <= 400; t += 50) {
-      clock.advance(50)
-      samples.push(tracker.sample(t / 50).turn)
-    }
-    // builds up first (attack easing + the growing turn ramp both push it up),
-    // then the envelope's taper — which starts at min(FULL_INTENT_MS, decay/2)
-    // = 140ms for turn keys — dominates and brings it back down to 0.
-    const peakIdx = samples.indexOf(Math.max(...samples))
-    expect(samples[peakIdx]).toBeGreaterThan(0)
-    for (let i = peakIdx + 1; i < samples.length; i++) expect(samples[i]).toBeLessThanOrEqual(samples[i - 1]!)
-    expect(samples[6]).toBe(0) // t=350ms: the turn-class window, not the old 450ms
-    expect(samples[7]).toBe(0)
-  })
-
-  it('class separation: turn and movement keys use their own initial decay windows (same event pattern, different fates at 350ms)', () => {
-    const clock = mkClock()
-    const turnTracker = new IntentTracker(clock.now)
-    const moveTracker = new IntentTracker(clock.now)
-    turnTracker.onKey({ key: 'right', kind: 'press' })
-    moveTracker.onKey({ key: 'w', kind: 'press' })
-    let turnAt350 = NaN
-    let moveAt350 = NaN
-    for (let t = 50; t <= 350; t += 50) {
-      clock.advance(50)
-      const turnSample = turnTracker.sample(t / 50).turn
-      const moveSample = moveTracker.sample(t / 50).forward
-      if (t === 350) {
-        turnAt350 = turnSample
-        moveAt350 = moveSample
-      }
-    }
-    // turn key: unlearned window shrank 450 -> 350ms, so a tap has fully released by t=350ms.
-    expect(turnAt350).toBe(0)
-    // movement key: unlearned window grew 450 -> 600ms (taper start 0.75*600=450ms),
-    // so the same tap is still at full strength at t=350ms.
-    expect(moveAt350).toBe(1)
-  })
-
-  it('turn ramp: a fresh tap starts near TURN_RAMP_BASE, not full strength', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now)
-    tracker.onKey({ key: 'right', kind: 'press' })
-    const s1 = tracker.sample(1).turn
-    expect(s1).toBeCloseTo(0.35, 5) // TURN_RAMP_BASE: envelope is 1 immediately, but the ramp starts at base
-    expect(s1).toBeLessThan(1)
-  })
-
-  it('turn ramp: a continuous hold (with repeats) reaches full strength by TURN_RAMP_MS (+ one tick tolerance)', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now)
-    tracker.onKey({ key: 'right', kind: 'press' }) // t=0
-    let nextRepeat = 40 // well under any taper window, so the envelope never dims
-    let seq = 0
-    let last = 0
-    for (let t = 50; t <= 550; t += 50) {
-      // TURN_RAMP_MS=500 + one 50ms tick
-      clock.advance(50)
-      while (nextRepeat <= t) {
-        tracker.onKey({ key: 'right', kind: 'repeat' })
-        nextRepeat += 40
-      }
-      last = tracker.sample(++seq).turn
-    }
-    expect(last).toBe(1)
-  })
-
-  it('turn ramp: after the hold fully decays, a new tap restarts the ramp from base', () => {
-    const clock = mkClock()
-    const tracker = new IntentTracker(clock.now)
-    tracker.onKey({ key: 'right', kind: 'press' }) // t=0
-    clock.advance(400) // > 350ms turn-class window: envelope fully decays, hold (and its ramp start) clears
-    expect(tracker.sample(1).turn).toBe(0)
-    tracker.onKey({ key: 'right', kind: 'press' }) // fresh press: envelope was 0, so this starts a new continuous hold
-    const s2 = tracker.sample(2).turn
-    expect(s2).toBeCloseTo(0.35, 5) // TURN_RAMP_BASE again, not continuing from the old hold's progress
   })
 })
 
-describe('IntentTracker tier 1 (kitty) — unaffected by the tier-2 envelope/easing', () => {
-  it('release ends the hold immediately, no decay', () => {
+describe('S2 regression — turn taps are exact quanta, holds are full-rate, never merged', () => {
+  it('S2: five isolated right taps 400ms apart emit exactly 5 × 0.06 rad total, each at tap-drain rate, never hold-rate', () => {
     const clock = mkClock()
-    const it1 = new IntentTracker(clock.now, 200)
-    it1.enableTier1()
-    it1.onKey({ key: 'w', kind: 'press' })
-    clock.advance(1000)
-    expect(it1.sample(1).forward).toBe(1) // still held: no release yet
-    it1.onKey({ key: 'w', kind: 'release' })
-    expect(it1.sample(2).forward).toBe(0)
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [0, 400, 800, 1200, 1600].map((t) => ({ t, key: 'right' }))
+    const samples = run(tracker, clock, events, 2000)
+    let total = 0
+    for (const s of samples.values()) {
+      total += s.turn * 0.13
+      // no tick exceeds tap-drain: taps never merge into a sweep or enter hold mode
+      expect(Math.abs(s.turn)).toBeLessThanOrEqual(TAP_DRAIN + 1e-12)
+    }
+    expect(total).toBeCloseTo(5 * 0.06, 12)
   })
+
+  it('S2: press+hold reaches |turn| = 1 within one tick of the first repeat and stays 1 until hold death after the last repeat', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [{ t: 0, key: 'right' }, ...repeats('right', 500, 1247, 83)]
+    const samples = run(tracker, clock, events, 1600)
+    // the press quantum drains on the first tick
+    expect(at(samples, 50).turn).toBeCloseTo(TAP_DRAIN, 12)
+    // documented trade: one clean pause between the tap quantum and the OS's first repeat
+    for (let t = 100; t <= 450; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(0)
+    // hold mode from the first repeat: instant full strength, no ramp, no easing
+    for (let t = 500; t <= 1400; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(1)
+    // hold dies max(2×83, 180) = 180ms after the last repeat (1247): exact 0, no easing tail
+    for (let t = 1450; t <= 1600; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(0)
+  })
+})
+
+describe('S3 regression — chorded W+D diagonal must survive F2 repeat starvation', () => {
+  it('S3: w held (repeating), d pressed at t=1000 (w events stop per F2): both axes ≥ 0.9 from 1600 through 3000, both 0 by 3600', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      // w owns the repeat slot until d is pressed
+      { t: 0, key: 'w' },
+      ...repeats('w', 500, 998, 83),
+      // d steals the single repeat slot (F2): w gets no further events, ever
+      { t: 1000, key: 'd' },
+      ...repeats('d', 1500, 2994, 83),
+      // d released at ~3000: all events stop
+    ]
+    const samples = run(tracker, clock, events, 3700)
+    for (let t = 1600; t <= 3000; t += 50) {
+      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
+      expect(at(samples, t).strafe, `strafe at t=${t}`).toBeGreaterThanOrEqual(0.9)
+    }
+    expect(at(samples, 3600).forward).toBe(0)
+    expect(at(samples, 3600).strafe).toBe(0)
+  })
+})
+
+describe('turn precision — tap quanta are exact, conserved, capped', () => {
+  it('a single tap emits exactly 0.06 rad total, all in one tick', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'right' }], 500)
+    expect(at(samples, 50).turn).toBeCloseTo(TAP_DRAIN, 12)
+    for (let t = 100; t <= 500; t += 50) expect(at(samples, t).turn).toBe(0)
+    const total = [...samples.values()].reduce((acc, s) => acc + s.turn * 0.13, 0)
+    expect(total).toBeCloseTo(0.06, 12)
+  })
+
+  it('an opposite tap before any drain zeroes the other direction: net rightward rotation is 0 (< one quantum)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'right', kind: 'press' })
+    clock.set(10)
+    tracker.onKey({ key: 'left', kind: 'press' }) // zeroes right's pending, enqueues left's quantum
+    clock.set(50)
+    expect(tracker.sample(1).turn).toBeCloseTo(-TAP_DRAIN, 12)
+    clock.set(100)
+    expect(tracker.sample(2).turn).toBe(0) // no rightward residue ever drains
+  })
+
+  it('an opposite tap mid-drain zeroes the remaining pending (the undrained remainder is dropped, not emitted)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    // three re-taps 130ms apart (past the steady-repeat gap, inside entry liveness): 0.18 rad pending
+    for (const t of [0, 130, 260]) {
+      clock.set(t)
+      tracker.onKey({ key: 'right', kind: 'press' })
+    }
+    clock.set(300)
+    expect(tracker.sample(1).turn).toBe(1) // full tick drains 0.13, leaving 0.05 pending
+    clock.set(320)
+    tracker.onKey({ key: 'left', kind: 'press' }) // zeroes the 0.05 remainder, enqueues -0.06
+    clock.set(350)
+    expect(tracker.sample(2).turn).toBeCloseTo(-TAP_DRAIN, 12)
+    clock.set(400)
+    expect(tracker.sample(3).turn).toBe(0) // rightward total stayed 0.13 of the enqueued 0.18
+  })
+
+  it('the pending budget caps at ±0.24 rad: excess taps are dropped, total emitted rotation is the cap', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    // five re-taps 130ms apart with no sampling between: 5 × 0.06 = 0.30 wants in, cap keeps 0.24
+    for (const t of [0, 130, 260, 390, 520]) {
+      clock.set(t)
+      tracker.onKey({ key: 'right', kind: 'press' })
+    }
+    let total = 0
+    for (let t = 550; t <= 800; t += 50) {
+      clock.set(t)
+      total += tracker.sample(t / 50).turn * 0.13
+    }
+    expect(total).toBeCloseTo(0.24, 12)
+  })
+})
+
+describe('turn hold classification — the first-repeat band separates OS repeats from human re-taps', () => {
+  it('an event 500ms after a press (inside [0.9, 1.25]×initialDelay) confirms hold mode', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'right' }, { t: 500, key: 'right' }], 600)
+    expect(at(samples, 500).turn).toBe(1)
+  })
+
+  it('a human re-tap 400ms after a press (below the band) stays a tap: two quanta, never hold mode', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'right' }, { t: 400, key: 'right' }], 900)
+    expect(at(samples, 50).turn).toBeCloseTo(TAP_DRAIN, 12)
+    expect(at(samples, 400).turn).toBeCloseTo(TAP_DRAIN, 12)
+    for (const s of samples.values()) expect(Math.abs(s.turn)).toBeLessThan(1) // no hold mode ever
+  })
+
+  it('a re-tap ~initialDelay after a DEAD hold\'s last repeat stays a tap (the band only applies to the gap after a press)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'right' },
+      ...repeats('right', 500, 666, 83), // hold mode; dies 180ms after 666
+      { t: 1166, key: 'right' }, // 500ms after the last repeat — a human re-tap, NOT a first repeat
+    ]
+    const samples = run(tracker, clock, events, 1400)
+    expect(at(samples, 850).turn).toBe(0) // hold died
+    expect(at(samples, 1200).turn).toBeCloseTo(TAP_DRAIN, 12) // one quantum, not a phantom ±1 spin
+    expect(at(samples, 1250).turn).toBe(0)
+  })
+
+  it('slow-cadence sanity ({500, 180}): hold mode survives 180ms repeats via the 2×interval grace', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock, { initialDelayMs: 500, repeatIntervalMs: 180 })
+    const events: Sched[] = [{ t: 0, key: 'right' }, { t: 500, key: 'right' }, { t: 680, key: 'right' }, { t: 860, key: 'right' }, { t: 1040, key: 'right' }]
+    const samples = run(tracker, clock, events, 1500)
+    for (let t = 500; t <= 1350; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(1)
+    expect(at(samples, 1400).turn).toBe(0) // death exactly 2×180ms after the last repeat
+  })
+
+  it('turn holds are never kept alive by other keys\' events (w owning the repeat slot kills a right-hold)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'right' },
+      ...repeats('right', 500, 666, 83), // hold mode
+      { t: 720, key: 'w' }, // w steals the repeat slot: right gets nothing more
+      ...repeats('w', 1220, 1400, 83),
+    ]
+    const samples = run(tracker, clock, events, 1400)
+    expect(at(samples, 800).turn).toBe(1) // 134ms after right's last event: still alive
+    expect(at(samples, 850).turn).toBe(0) // ≥180ms: dead, despite w's events flowing
+    expect(at(samples, 850).forward).toBeGreaterThan(0) // w itself is alive
+  })
+
+  it('an opposite-direction event kills a live hold instantly', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'right' },
+      ...repeats('right', 500, 666, 83), // right hold
+      { t: 700, key: 'left' },
+    ]
+    const samples = run(tracker, clock, events, 800)
+    expect(at(samples, 650).turn).toBe(1)
+    expect(at(samples, 700).turn).toBeCloseTo(-TAP_DRAIN, 12) // hold dead, left's quantum drains
+    expect(at(samples, 750).turn).toBe(0)
+  })
+})
+
+describe('movement keep-alive — cross-key grants against F2 starvation', () => {
+  it('event-type asymmetry: a press grants PHASE_A (w survives a 500ms self-gap), repeats grant only 350ms', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' }, // w's only own event
+      { t: 600, key: 'd' }, // press-classified: grants w PHASE_A (655) → w lives to 1255
+      { t: 1100, key: 'd' }, // d's first repeat: grants w 350 → 1450
+      { t: 1183, key: 'd' }, // repeat: grants w 350 → 1533
+    ]
+    const samples = run(tracker, clock, events, 1700)
+    expect(at(samples, 1100).forward).toBe(1) // survived 500ms without any own event: press grant was PHASE_A
+    expect(at(samples, 1400).forward).toBe(1) // repeat grants carried it to 1533
+    expect(at(samples, 1600).forward).toBe(0) // repeat grant was 350, NOT PHASE_A (655 would still read 1 here)
+  })
+
+  it('space-source grants are capped: with only space events, w dies by lastSelfEvent + 1500 + grant + taper', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' }, // lastSelfEvent = 0, forever
+      ...repeats(' ', 100, 2100, 83), // stand-and-fire: space repeats for 2s
+    ]
+    const samples = run(tracker, clock, events, 2100)
+    expect(at(samples, 1500).forward).toBe(1) // grants flow while within the cap
+    // last granting space event ≤ 1500 is at 1428 → w expires 1778 → eased 0 well before the 1970 bound
+    expect(at(samples, 1850).forward).toBe(0)
+    expect(at(samples, 1950).forward).toBe(0) // = lastSelfEvent + 1500 + 350 + 120 bound (minus grid rounding)
+  })
+
+  it('movement-source grants are exempt from the cap: d repeating for 4s keeps w at full forward throughout', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' }, // w's only own event: silent (F2) for the whole 4s
+      { t: 100, key: 'd' },
+      ...repeats('d', 600, 3920, 83), // a real chord: d's repeats never stop
+    ]
+    const samples = run(tracker, clock, events, 4000)
+    for (let t = 100; t <= 4000; t += 50) {
+      // now − w.lastSelfEvent reaches 4000 — far past the 1500ms cap — but the
+      // source is a currently-held movement key, so grants keep flowing (S3)
+      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
+      expect(at(samples, t).strafe, `strafe at t=${t}`).toBeGreaterThanOrEqual(t >= 200 ? 0.9 : 0)
+    }
+  })
+
+  it('turn keys GIVE movement grants (their events prove the hand is on the keyboard)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' },
+      { t: 300, key: 'right' }, // press-classified turn event: grants w PHASE_A → 955
+    ]
+    const samples = run(tracker, clock, events, 900)
+    expect(at(samples, 800).forward).toBe(1) // without the grant w's envelope is 0 by 655
+  })
+
+  it('untracked keys arm nothing: repeating x/tab does not extend a decaying w', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' },
+      ...repeats('x', 100, 900, 83),
+      ...repeats('tab', 140, 900, 83),
+    ]
+    const samples = run(tracker, clock, events, 900)
+    expect(at(samples, 750).forward).toBe(0) // w expired at 655 and eased out, untouched by x/tab
+  })
+
+  it('a provisional stop-tap is never kept alive by chord grants (no phantom sustained reverse)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' },
+      { t: 50, key: 'd' },
+      ...repeats('d', 550, 1500, 83), // d owns the repeat slot throughout
+      { t: 701, key: 's' }, // stop-tap: clears w, registers provisionally (150ms)
+    ]
+    const samples = run(tracker, clock, events, 1300)
+    expect(at(samples, 750).forward).toBeLessThanOrEqual(0) // stop-first took effect
+    for (const [t, s] of samples) {
+      expect(s.forward, `forward at t=${t}`).toBeGreaterThanOrEqual(-0.55 - 1e-9) // never a full reverse
+    }
+    expect(at(samples, 950).forward).toBe(0) // s expired on its own terms despite d's repeats granting
+    expect(at(samples, 1200).forward).toBe(0)
+    expect(at(samples, 1200).strafe).toBe(1) // the chord partner itself is unaffected
+  })
+})
+
+describe('stop-first opposing press (B3)', () => {
+  // w held in phase B (repeats flowing), envelope alive through ~959
+  const wHold: Sched[] = [{ t: 0, key: 'w' }, ...repeats('w', 500, 666, 83)]
+
+  it('tap-S while running: forward ≤ 0 next tick, bounded by one attack step within 150ms, back to 0 — no backward lurch', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [...wHold, { t: 701, key: 's' }], 1000)
+    expect(at(samples, 700).forward).toBe(1) // running forward until the tap
+    expect(at(samples, 750).forward).toBeLessThanOrEqual(0) // snap + one attack step
+    for (const t of [750, 800, 850]) {
+      expect(Math.abs(at(samples, t).forward), `|forward| at t=${t}`).toBeLessThanOrEqual(0.55 + 1e-9)
+    }
+    expect(at(samples, 900).forward).toBe(0) // provisional expired at 851: instant stop achieved
+  })
+
+  it('hold-S: the provisional entry expires, then the OS first repeat re-registers a full phase-A hold — full reverse', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [...wHold, { t: 701, key: 's' }, ...repeats('s', 1201, 1450, 83)]
+    const samples = run(tracker, clock, events, 1500)
+    // documented trade: between the provisional expiry (851) and the OS's
+    // first repeat (1201) the held S produces nothing — one clean pause
+    expect(at(samples, 1150).forward).toBe(0)
+    for (let t = 1300; t <= 1450; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(-1)
+  })
+
+  it('a human re-tap inside the provisional window upgrades to a full phase-A hold (the OS cannot repeat that fast)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [...wHold, { t: 701, key: 's' }, { t: 801, key: 's' }]
+    const samples = run(tracker, clock, events, 1600)
+    expect(at(samples, 900).forward).toBe(-1) // upgraded: full reverse immediately
+    expect(at(samples, 1300).forward).toBe(-1) // phase-A window (655), not a 173ms steady window
+    expect(at(samples, 1550).forward).toBe(0) // and it still expires without repeats
+  })
+
+  it('a re-press after F2 starvation resets the phase to A (no steady-window sawtooth on the new hold)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'w' },
+      ...repeats('w', 500, 998, 83), // phase B taught
+      { t: 1000, key: 'd' }, // F2: w starves; d's press grants w to 1655
+      { t: 1300, key: 'w' }, // player re-presses w: implausible 302ms gap = new physical hold
+      ...repeats('w', 1800, 2049, 83), // the new hold's own first repeat comes a full initialDelay later
+    ]
+    const samples = run(tracker, clock, events, 2300)
+    for (let t = 1350; t <= 2200; t += 50) {
+      // a persisted phase B would give the re-press a 173ms window and kill it
+      // inside the 500ms initial-repeat gap — the F3 sawtooth all over again
+      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
+    }
+  })
+})
+
+describe('movement envelope — phase A window and taper', () => {
+  it('PHASE_A margin pin: with the ×1.15+80 variant, a factory first repeat (500ms) lands while the envelope is still 1.0', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }], 800)
+    expect(at(samples, 500).forward).toBe(1) // taper starts at 655−120 = 535 > 500
+    expect(at(samples, 550).forward).toBeLessThan(1) // tap without repeats begins tapering
+    expect(at(samples, 700).forward).toBe(0) // fully released by expiry + easing tail
+  })
+
+  it('a tap releases through the taper + easing: never a cliff (per-tick drop ≤ RELEASE_PER_TICK)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }], 800)
+    const values = [...samples.values()].map((s) => s.forward)
+    const peak = Math.max(...values)
+    expect(peak).toBe(1)
+    for (let i = values.indexOf(peak) + 1; i < values.length; i++) {
+      const drop = values[i - 1]! - values[i]!
+      expect(drop).toBeGreaterThanOrEqual(0)
+      expect(drop).toBeLessThanOrEqual(0.3 + 1e-9)
+    }
+  })
+
+  it('attack easing: 0 → full within 2 samples of a fresh hold', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'w', kind: 'press' })
+    expect(tracker.sample(1).forward).toBe(0.55)
+    expect(tracker.sample(2).forward).toBe(1)
+  })
+
+  it('release events are ignored in tier 2 (legacy terminals never send them)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'd', kind: 'press' })
+    tracker.onKey({ key: 'd', kind: 'release' }) // terminal quirk: must not clear the hold
+    clock.set(50)
+    expect(tracker.sample(1).strafe).toBeGreaterThan(0)
+  })
+})
+
+describe('fire — per-event latch (no hold inference)', () => {
+  it('a single space press fires for 250ms, then stops', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: ' ' }], 400)
+    for (const t of [50, 100, 150, 200]) expect(at(samples, t).fire, `fire at t=${t}`).toBe(true)
+    for (const t of [250, 300, 350, 400]) expect(at(samples, t).fire, `fire at t=${t}`).toBe(false)
+  })
+
+  it('space repeats sustain the latch; when another key steals the repeat slot, fire stops ≤ 250ms later', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: ' ' },
+      ...repeats(' ', 83, 498, 83),
+      { t: 510, key: 'w' }, // F2: space starves from here
+      ...repeats('w', 1010, 1200, 83),
+    ]
+    const samples = run(tracker, clock, events, 1200)
+    expect(at(samples, 500).fire).toBe(true)
+    expect(at(samples, 700).fire).toBe(true) // latch from the last space event (498) runs to 748
+    for (let t = 750; t <= 1200; t += 50) expect(at(samples, t).fire, `fire at t=${t}`).toBe(false)
+  })
+})
+
+describe('resetTransient — respawn/tier-switch hygiene', () => {
+  it('clears pending turn budget, hold modes, movement holds, fire latch, and smoothed axes', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const events: Sched[] = [
+      { t: 0, key: 'right' },
+      ...repeats('right', 500, 583, 83), // right in hold mode
+      { t: 20, key: 'w' },
+      ...repeats('w', 520, 603, 83),
+      { t: 30, key: ' ' },
+      { t: 600, key: ' ' },
+      { t: 550, key: 'left' }, // opposite tap: right's next repeat (583) zeroes it and re-sustains the hold
+    ]
+    const samples = run(tracker, clock, events, 650)
+    expect(at(samples, 650).forward).toBe(1)
+    expect(at(samples, 650).fire).toBe(true)
+    clock.set(700)
+    tracker.onKey({ key: 'right', kind: 'press' }) // sustains hold; also ensures pending path is exercised below
+    tracker.resetTransient()
+    const s = tracker.sample(99)
+    expect(s.forward).toBe(0) // smoothed snapped, not eased down
+    expect(s.strafe).toBe(0)
+    expect(s.turn).toBe(0) // hold mode + pending budget gone
+    expect(s.fire).toBe(false) // latch gone
+    clock.set(2000)
+    expect(tracker.sample(100).turn).toBe(0) // nothing drains later either
+  })
+
+  it('a tap enqueued just before death never drains after the reset', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'right', kind: 'press' })
+    tracker.resetTransient() // die before the sim tick sampled the quantum
+    clock.set(50)
+    expect(tracker.sample(1).turn).toBe(0)
+  })
+})
+
+describe('tier 1 (kitty) — real press/repeat/release', () => {
+  it('movement is exactly binary: held = 1 regardless of repeats, release = instant 0', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: 'w', kind: 'press' })
+    expect(tracker.sample(1).forward).toBe(1)
+    for (let i = 0; i < 5; i++) {
+      clock.set(clock.now() + 35)
+      tracker.onKey({ key: 'w', kind: 'repeat' })
+      expect(tracker.sample(2 + i).forward).toBe(1)
+    }
+    clock.set(clock.now() + 1000)
+    expect(tracker.sample(10).forward).toBe(1) // no decay while held
+    tracker.onKey({ key: 'w', kind: 'release' })
+    expect(tracker.sample(11).forward).toBe(0) // instant, no easing tail
+  })
+
+  it('opposing held movement keys cancel', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: 'w', kind: 'press' })
+    tracker.onKey({ key: 's', kind: 'press' })
+    expect(tracker.sample(1).forward).toBe(0)
+  })
+
+  it('turn: tap = one quantum; held ≥ 150ms = hold mode ±1; release = instant 0', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: 'right', kind: 'press' })
+    expect(tracker.sample(1).turn).toBeCloseTo(TAP_DRAIN, 12) // the press quantum
+    expect(tracker.sample(2).turn).toBe(0) // drained; not yet held long enough for hold mode
+    clock.set(150)
+    expect(tracker.sample(3).turn).toBe(1) // hold mode: full rate, no ramp
+    clock.set(1000)
+    expect(tracker.sample(4).turn).toBe(1)
+    tracker.onKey({ key: 'right', kind: 'release' })
+    expect(tracker.sample(5).turn).toBe(0)
+  })
+
+  it('turn: release clears that direction\'s pending budget (an undrained tap does not fire after release)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: 'right', kind: 'press' })
+    tracker.onKey({ key: 'right', kind: 'release' }) // sub-tick tap: released before any sample
+    clock.set(50)
+    expect(tracker.sample(1).turn).toBe(0)
+  })
+
+  it('turn: repeat events never enqueue quanta (tier 1 is driven by press/release truth)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: 'right', kind: 'press' })
+    expect(tracker.sample(1).turn).toBeCloseTo(TAP_DRAIN, 12)
+    clock.set(100)
+    tracker.onKey({ key: 'right', kind: 'repeat' })
+    tracker.onKey({ key: 'right', kind: 'repeat' })
+    expect(tracker.sample(2).turn).toBe(0) // no extra quanta, hold mode not yet reached
+    clock.set(200)
+    expect(tracker.sample(3).turn).toBe(1) // hold mode purely from held-time
+  })
+
+  it('fire: real held state; release clears it', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: ' ', kind: 'press' })
+    expect(tracker.sample(1).fire).toBe(true)
+    clock.set(1000)
+    expect(tracker.sample(2).fire).toBe(true) // held: no 250ms latch decay in tier 1
+    tracker.onKey({ key: ' ', kind: 'release' })
+    expect(tracker.sample(3).fire).toBe(false)
+  })
+
   it('enableTier1 clears tier-2 residue so no key is phantom-held', () => {
     const clock = mkClock()
-    const t = new IntentTracker(clock.now, 200)
-    t.onKey({ key: 'w', kind: 'press' })
-    t.onKey({ key: 'w', kind: 'release' }) // ignored in tier 2 — entry lingers
-    t.enableTier1()
-    clock.advance(10_000)
-    expect(t.sample(1).forward).toBe(0) // not phantom-held
-  })
-  it('stays exactly binary under a rapid repeat pattern (no tapering, unlike tier 2)', () => {
-    const clock = mkClock()
-    const t = new IntentTracker(clock.now, 200)
-    t.enableTier1()
-    t.onKey({ key: 'w', kind: 'press' })
-    expect(t.sample(0).forward).toBe(1)
-    for (let i = 1; i <= 5; i++) {
-      clock.advance(35)
-      t.onKey({ key: 'w', kind: 'repeat' })
-      expect(t.sample(i).forward).toBe(1) // always exactly 1, never a fractional value
-    }
-    t.onKey({ key: 'w', kind: 'release' })
-    expect(t.sample(99).forward).toBe(0) // instant release, no decay tail
-  })
-  it('turn ramp applies even though the hold itself stays exactly binary (real press/release, no envelope taper)', () => {
-    const clock = mkClock()
-    const t = new IntentTracker(clock.now)
-    t.enableTier1()
-    t.onKey({ key: 'right', kind: 'press' }) // t=0
-    const s1 = t.sample(1).turn
-    expect(s1).toBeCloseTo(0.35, 5) // TURN_RAMP_BASE: held is exactly binary (true), but the axis still ramps
-    clock.advance(500) // TURN_RAMP_MS
-    expect(t.sample(2).turn).toBe(1) // ramp reached full strength; no easing in tier 1, so this is exact
-    t.onKey({ key: 'right', kind: 'release' })
-    expect(t.sample(3).turn).toBe(0) // binary: release drops it instantly, no decay tail
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'w', kind: 'press' })
+    tracker.onKey({ key: 'right', kind: 'press' }) // pending quantum
+    tracker.onKey({ key: ' ', kind: 'press' }) // latch
+    tracker.enableTier1()
+    clock.set(10_000)
+    const s = tracker.sample(1)
+    expect(s.forward).toBe(0)
+    expect(s.turn).toBe(0)
+    expect(s.fire).toBe(false)
   })
 })
 
-describe('mapping', () => {
-  it('combines axes and fire (after the attack ramp reaches full strength)', () => {
+describe('mapping — axes and fire combine', () => {
+  it('w + a + right-tap + space: movement builds to full via attack easing, the turn quantum drains once, fire latches', () => {
     const clock = mkClock()
-    const t = new IntentTracker(clock.now, 200)
-    t.onKey({ key: 'w', kind: 'press' })
-    t.onKey({ key: 'a', kind: 'press' })
-    t.onKey({ key: 'right', kind: 'press' })
-    t.onKey({ key: ' ', kind: 'press' })
-    t.sample(7) // easing is per-tick, not wall-clock: warm up two ticks first
-    t.sample(8)
-    const i = t.sample(9)
-    // forward/strafe/fire reach full/binary strength once the attack easing
-    // catches up; turn is additionally scaled by the turn-speed ramp — no
-    // wall-clock time passes in this test, so the tap sits at TURN_RAMP_BASE
-    // (0.35). The ramp's growth over time is covered by the dedicated "turn
-    // ramp" tests above.
-    expect(i).toEqual({ seq: 9, forward: 1, strafe: -1, turn: 0.35, fire: true })
-  })
-  it('opposing keys cancel', () => {
-    const clock = mkClock()
-    const t = new IntentTracker(clock.now, 200)
-    t.onKey({ key: 'w', kind: 'press' })
-    t.onKey({ key: 's', kind: 'press' })
-    expect(t.sample(1).forward).toBe(0)
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'w', kind: 'press' })
+    tracker.onKey({ key: 'a', kind: 'press' })
+    tracker.onKey({ key: 'right', kind: 'press' })
+    tracker.onKey({ key: ' ', kind: 'press' })
+    const s1 = tracker.sample(1)
+    expect(s1.forward).toBe(0.55)
+    expect(s1.strafe).toBe(-0.55)
+    expect(s1.turn).toBeCloseTo(TAP_DRAIN, 12)
+    expect(s1.fire).toBe(true)
+    tracker.sample(2)
+    const s3 = tracker.sample(3)
+    expect(s3).toEqual({ seq: 3, forward: 1, strafe: -1, turn: 0, fire: true })
   })
 })

@@ -1,4 +1,5 @@
 import { doctorReport } from './doctor.js'
+import { readOsKeyTimings } from './input/os-timings.js'
 import { parseArgs } from './cliArgs.js'
 
 // parseArgs/CliOpts live in cliArgs.js (pure, no side effects) so tests can
@@ -10,7 +11,10 @@ export { parseArgs } from './cliArgs.js'
 
 const opts = parseArgs(process.argv.slice(2))
 if (opts.mode === 'doctor') {
-  console.log(doctorReport(process.env, process.stdout.isTTY ?? false, process.stdout.columns ?? 0, process.stdout.rows ?? 0))
+  // Timings only exist as a measurement on darwin; elsewhere the report
+  // omits the key-repeat line rather than printing the factory fallback.
+  const keyTimings = process.platform === 'darwin' ? readOsKeyTimings() : undefined
+  console.log(doctorReport(process.env, process.stdout.isTTY ?? false, process.stdout.columns ?? 0, process.stdout.rows ?? 0, keyTimings))
 } else {
   const { main } = await import('./main.js')
   await main(opts)
