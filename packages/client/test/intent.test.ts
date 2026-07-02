@@ -39,6 +39,15 @@ describe('IntentTracker tier 1 (kitty)', () => {
     it1.onKey({ key: 'w', kind: 'release' })
     expect(it1.sample(2).forward).toBe(0)
   })
+  it('enableTier1 clears tier-2 residue so no key is phantom-held', () => {
+    const clock = mkClock()
+    const t = new IntentTracker(clock.now, 200)
+    t.onKey({ key: 'w', kind: 'press' })
+    t.onKey({ key: 'w', kind: 'release' }) // ignored in tier 2 — entry lingers
+    t.enableTier1()
+    clock.advance(10_000)
+    expect(t.sample(1).forward).toBe(0) // not phantom-held
+  })
 })
 
 describe('mapping', () => {

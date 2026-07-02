@@ -11,6 +11,7 @@ export class IntentTracker {
 
   enableTier1(): void {
     this.tier1 = true
+    this.held.clear() // tier-2 entries have no reliable release; start clean
   }
 
   onKey(e: KeyEvent): void {
