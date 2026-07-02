@@ -61,23 +61,46 @@ describe('KeyParser', () => {
     expect(events).toHaveLength(20)
     expect(events.every((e) => e.key === 'a')).toBe(true)
   })
-  it('SGR mouse press/release sequences are swallowed silently', () => {
+  it('SGR mouse press/release decode: left button, coordinates pass through as numbers', () => {
     const p = new KeyParser()
-    expect(p.feed('\x1b[<0;10;20M')).toEqual([]) // button press
-    expect(p.feed('\x1b[<0;10;20m')).toEqual([]) // button release
-    expect(p.feed('\x1b[<35;42;7M')).toEqual([]) // motion report
+    expect(p.feed('\x1b[<0;10;20M')).toEqual([{ type: 'mouse', x: 10, y: 20, button: 'left', action: 'press' }])
+    expect(p.feed('\x1b[<0;10;20m')).toEqual([{ type: 'mouse', x: 10, y: 20, button: 'left', action: 'release' }])
+  })
+  it('SGR motion decode: buttonless move (b=35 → none + motion bit), final M still reads as motion', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[<35;42;7M')).toEqual([{ type: 'mouse', x: 42, y: 7, button: 'none', action: 'motion' }])
+  })
+  it('wheel reports (b=64/65, ± motion bit) are swallowed — trackpad scroll must not become input', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[<64;10;10M')).toEqual([]) // wheel up
+    expect(p.feed('\x1b[<65;10;10M')).toEqual([]) // wheel down
+    expect(p.feed('\x1b[<96;10;10M')).toEqual([]) // wheel + motion bit (64+32)
+  })
+  it('malformed mouse reports are swallowed silently (never throw, never leak partial bytes)', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[<0;10M')).toEqual([]) // missing y field
+    expect(p.feed('\x1b[<;;M')).toEqual([]) // empty (non-numeric) fields
+    expect(p.feed('\x1b[<0;10;20;30M')).toEqual([]) // extra field
+    expect(p.feed('w')).toEqual([{ key: 'w', kind: 'press' }]) // parser stays healthy
   })
   it('a key immediately following a mouse sequence in the same chunk still parses', () => {
     const p = new KeyParser()
-    expect(p.feed('\x1b[<0;10;20Md')).toEqual([{ key: 'd', kind: 'press' }])
+    expect(p.feed('\x1b[<0;10;20Md')).toEqual([
+      { type: 'mouse', x: 10, y: 20, button: 'left', action: 'press' },
+      { key: 'd', kind: 'press' },
+    ])
     expect(p.feed('w\x1b[<0;5;5m\x1b[A')).toEqual([
       { key: 'w', kind: 'press' },
+      { type: 'mouse', x: 5, y: 5, button: 'left', action: 'release' },
       { key: 'up', kind: 'press' },
     ])
   })
-  it('a mouse sequence split across feed() chunks reassembles and swallows cleanly, without corrupting the next key', () => {
+  it('a mouse sequence split across feed() chunks reassembles and decodes, without corrupting the next key', () => {
     const p = new KeyParser()
     expect(p.feed('\x1b[<0;123;4')).toEqual([]) // partial: wait for more bytes
-    expect(p.feed('5M' + 'd')).toEqual([{ key: 'd', kind: 'press' }])
+    expect(p.feed('5M' + 'd')).toEqual([
+      { type: 'mouse', x: 123, y: 45, button: 'left', action: 'press' },
+      { key: 'd', kind: 'press' },
+    ])
   })
 })

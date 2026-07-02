@@ -66,27 +66,38 @@ function at(samples: Map<number, PlayerInput>, t: number): PlayerInput {
   return s
 }
 
-describe('S1 regression — fresh movement press after a taught hold must not sawtooth (F3)', () => {
-  it('S1: w press at T0 after a previous 83ms-repeat hold: forward ≥ 0.9 for every tick in [T0+100, T0+1500]', () => {
+describe('latched walking (tier 2) — the continuous-walking fix', () => {
+  it('THE regression: one W tap with NO further events keeps forward latched at 1 indefinitely', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    const T0 = 1500
-    const events: Sched[] = [
-      // previous hold: press, first repeat at 500, steady 83ms repeats, then released
-      { t: 0, key: 'w' },
-      ...repeats('w', 500, 666, 83),
-      // fresh hold: press, the OS's 500ms initial-repeat gap, then steady repeats.
-      // Under the old adaptive-decay design the learned ~173ms window persisted
-      // across holds and the fresh press died inside the 500ms gap (F3 sawtooth).
-      { t: T0, key: 'w' },
-      ...repeats('w', T0 + 500, T0 + 1500, 83),
-    ]
-    const samples = run(tracker, clock, events, T0 + 1500)
-    // the previous hold fully expired and eased back to rest before the fresh press
-    expect(at(samples, 1450).forward).toBe(0)
-    for (let t = T0 + 100; t <= T0 + 1500; t += 50) {
-      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
-    }
+    // A single press, then total silence — no OS repeats at all. The old
+    // hold-inference envelopes decayed here; the latch does not.
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }], 5000)
+    for (let t = 100; t <= 5000; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(1)
+  })
+
+  it('OS repeats of the active key are harmless no-ops (forward stays 1, never toggles)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }, ...repeats('w', 500, 3000, 83)], 3200)
+    for (let t = 100; t <= 3200; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(1)
+  })
+
+  it('a latch flip ramps through easing — no instant 0→1 cliff in the smoothed output', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'w', kind: 'press' })
+    expect(tracker.sample(1).forward).toBe(0.55) // one attack step, not a jump to 1
+    expect(tracker.sample(2).forward).toBe(1)
+  })
+
+  it('release events are ignored in tier 2 (legacy terminals never send them — the latch must persist)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'd', kind: 'press' })
+    tracker.onKey({ key: 'd', kind: 'release' }) // terminal quirk: must not clear the latch
+    clock.set(50)
+    expect(tracker.sample(1).strafe).toBeGreaterThan(0)
   })
 })
 
@@ -121,26 +132,27 @@ describe('S2 regression — turn taps are exact quanta, holds are full-rate, nev
   })
 })
 
-describe('S3 regression — chorded W+D diagonal must survive F2 repeat starvation', () => {
-  it('S3: w held (repeating), d pressed at t=1000 (w events stop per F2): both axes ≥ 0.9 from 1600 through 3000, both 0 by 3600', () => {
+describe('latched diagonal (tier 2) — replaces the F2 keep-alive machinery', () => {
+  it('W then D latches a diagonal: both axes reach 1 and hold indefinitely with no further events', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      // w owns the repeat slot until d is pressed
-      { t: 0, key: 'w' },
-      ...repeats('w', 500, 998, 83),
-      // d steals the single repeat slot (F2): w gets no further events, ever
-      { t: 1000, key: 'd' },
-      ...repeats('d', 1500, 2994, 83),
-      // d released at ~3000: all events stop
-    ]
-    const samples = run(tracker, clock, events, 3700)
-    for (let t = 1600; t <= 3000; t += 50) {
-      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
-      expect(at(samples, t).strafe, `strafe at t=${t}`).toBeGreaterThanOrEqual(0.9)
+    // Two taps, then silence. The old model needed cross-key keep-alive to keep
+    // a chord alive under F2 repeat starvation; the latch needs no events at all.
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }, { t: 200, key: 'd' }], 4000)
+    for (let t = 400; t <= 4000; t += 50) {
+      expect(at(samples, t).forward, `forward at t=${t}`).toBe(1)
+      expect(at(samples, t).strafe, `strafe at t=${t}`).toBe(1)
     }
-    expect(at(samples, 3600).forward).toBe(0)
-    expect(at(samples, 3600).strafe).toBe(0)
+  })
+
+  it('one axis of a diagonal can be stopped independently while the other keeps walking', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }, { t: 200, key: 'd' }, { t: 2000, key: 'a' }], 3000)
+    for (let t = 2400; t <= 3000; t += 50) {
+      expect(at(samples, t).forward, `forward at t=${t}`).toBe(1) // still walking forward
+      expect(at(samples, t).strafe, `strafe at t=${t}`).toBe(0) // strafe stopped by the opposing tap
+    }
   })
 })
 
@@ -272,191 +284,58 @@ describe('turn hold classification — the first-repeat band separates OS repeat
   })
 })
 
-describe('movement keep-alive — cross-key grants against F2 starvation', () => {
-  it('event-type asymmetry: a press grants PHASE_A (w survives a 500ms self-gap), repeats grant only 350ms', () => {
+describe('movement latch — stop-first and reverse (tier 2)', () => {
+  it('an opposing tap STOPS (axis → 0), it does not reverse; forward never goes negative', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' }, // w's only own event
-      { t: 600, key: 'd' }, // press-classified: grants w PHASE_A (655) → w lives to 1255
-      { t: 1100, key: 'd' }, // d's first repeat: grants w 350 → 1450
-      { t: 1183, key: 'd' }, // repeat: grants w 350 → 1533
-    ]
-    const samples = run(tracker, clock, events, 1700)
-    expect(at(samples, 1100).forward).toBe(1) // survived 500ms without any own event: press grant was PHASE_A
-    expect(at(samples, 1400).forward).toBe(1) // repeat grants carried it to 1533
-    expect(at(samples, 1600).forward).toBe(0) // repeat grant was 350, NOT PHASE_A (655 would still read 1 here)
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }, { t: 1000, key: 's' }], 2000)
+    expect(at(samples, 950).forward).toBe(1) // still walking just before the tap
+    for (let t = 1200; t <= 2000; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(0) // stopped
+    for (const [t, s] of samples) expect(s.forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0) // never a reverse
   })
 
-  it('space-source grants are capped: with only space events, w dies by lastSelfEvent + 1500 + grant + taper', () => {
+  it('a SECOND opposing event reverses (0 → −1): tap = stop, the next opposing tap = reverse', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' }, // lastSelfEvent = 0, forever
-      ...repeats(' ', 100, 2100, 83), // stand-and-fire: space repeats for 2s
-    ]
-    const samples = run(tracker, clock, events, 2100)
-    expect(at(samples, 1500).forward).toBe(1) // grants flow while within the cap
-    // last granting space event ≤ 1500 is at 1428 → w expires 1778 → eased 0 well before the 1970 bound
-    expect(at(samples, 1850).forward).toBe(0)
-    expect(at(samples, 1950).forward).toBe(0) // = lastSelfEvent + 1500 + 350 + 120 bound (minus grid rounding)
+    const samples = run(tracker, clock, [{ t: 0, key: 'w' }, { t: 1000, key: 's' }, { t: 1500, key: 's' }], 2500)
+    for (let t = 1200; t <= 1450; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(0) // stopped by first s
+    for (let t = 1700; t <= 2500; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(-1) // reversed by second s
   })
 
-  it('movement-source grants are exempt from the cap: d repeating for 4s keeps w at full forward throughout', () => {
+  it('a held opposing key reverses on its OS repeat (tap = stop, hold = reverse — the same rule, timing-free)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' }, // w's only own event: silent (F2) for the whole 4s
-      { t: 100, key: 'd' },
-      ...repeats('d', 600, 3920, 83), // a real chord: d's repeats never stop
-    ]
-    const samples = run(tracker, clock, events, 4000)
-    for (let t = 100; t <= 4000; t += 50) {
-      // now − w.lastSelfEvent reaches 4000 — far past the 1500ms cap — but the
-      // source is a currently-held movement key, so grants keep flowing (S3)
-      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
-      expect(at(samples, t).strafe, `strafe at t=${t}`).toBeGreaterThanOrEqual(t >= 200 ? 0.9 : 0)
-    }
+    // s pressed at 1000 (stop), then the OS's first repeat at 1500 and steady
+    // repeats — indistinguishable presses that flip 0 → −1 and then no-op.
+    const events: Sched[] = [{ t: 0, key: 'w' }, { t: 1000, key: 's' }, ...repeats('s', 1500, 2500, 83)]
+    const samples = run(tracker, clock, events, 2700)
+    expect(at(samples, 1400).forward).toBe(0) // stop holds until the first repeat
+    for (let t = 1700; t <= 2700; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(-1) // then full reverse
   })
 
-  it('turn keys GIVE movement grants (their events prove the hand is on the keyboard)', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' },
-      { t: 300, key: 'right' }, // press-classified turn event: grants w PHASE_A → 955
-    ]
-    const samples = run(tracker, clock, events, 900)
-    expect(at(samples, 800).forward).toBe(1) // without the grant w's envelope is 0 by 655
-  })
-
-  it('untracked keys arm nothing: repeating x/tab does not extend a decaying w', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' },
-      ...repeats('x', 100, 900, 83),
-      ...repeats('tab', 140, 900, 83),
-    ]
-    const samples = run(tracker, clock, events, 900)
-    expect(at(samples, 750).forward).toBe(0) // w expired at 655 and eased out, untouched by x/tab
-  })
-
-  it('a provisional stop-tap is never kept alive by chord grants (no phantom sustained reverse)', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' },
-      { t: 50, key: 'd' },
-      ...repeats('d', 550, 1500, 83), // d owns the repeat slot throughout
-      { t: 701, key: 's' }, // stop-tap: clears w, registers provisionally (150ms)
-    ]
-    const samples = run(tracker, clock, events, 1300)
-    expect(at(samples, 750).forward).toBeLessThanOrEqual(0) // stop-first took effect
-    for (const [t, s] of samples) {
-      expect(s.forward, `forward at t=${t}`).toBeGreaterThanOrEqual(-0.55 - 1e-9) // never a full reverse
-    }
-    expect(at(samples, 950).forward).toBe(0) // s expired on its own terms despite d's repeats granting
-    expect(at(samples, 1200).forward).toBe(0)
-    expect(at(samples, 1200).strafe).toBe(1) // the chord partner itself is unaffected
-  })
-})
-
-describe('stop-first opposing press (B3)', () => {
-  // w held in phase B (repeats flowing), envelope alive through ~959
-  const wHold: Sched[] = [{ t: 0, key: 'w' }, ...repeats('w', 500, 666, 83)]
-
-  it('tap-S while running: forward ≤ 0 next tick, bounded by one attack step within 150ms, back to 0 — no backward lurch', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const samples = run(tracker, clock, [...wHold, { t: 701, key: 's' }], 1000)
-    expect(at(samples, 700).forward).toBe(1) // running forward until the tap
-    expect(at(samples, 750).forward).toBeLessThanOrEqual(0) // snap + one attack step
-    for (const t of [750, 800, 850]) {
-      expect(Math.abs(at(samples, t).forward), `|forward| at t=${t}`).toBeLessThanOrEqual(0.55 + 1e-9)
-    }
-    expect(at(samples, 900).forward).toBe(0) // provisional expired at 851: instant stop achieved
-  })
-
-  it('hold-S: the provisional entry expires, then the OS first repeat re-registers a full phase-A hold — full reverse', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const events: Sched[] = [...wHold, { t: 701, key: 's' }, ...repeats('s', 1201, 1450, 83)]
-    const samples = run(tracker, clock, events, 1500)
-    // documented trade: between the provisional expiry (851) and the OS's
-    // first repeat (1201) the held S produces nothing — one clean pause
-    expect(at(samples, 1150).forward).toBe(0)
-    for (let t = 1300; t <= 1450; t += 50) expect(at(samples, t).forward, `forward at t=${t}`).toBe(-1)
-  })
-
-  it('a human re-tap inside the provisional window upgrades to a full phase-A hold (the OS cannot repeat that fast)', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const events: Sched[] = [...wHold, { t: 701, key: 's' }, { t: 801, key: 's' }]
-    const samples = run(tracker, clock, events, 1600)
-    expect(at(samples, 900).forward).toBe(-1) // upgraded: full reverse immediately
-    expect(at(samples, 1300).forward).toBe(-1) // phase-A window (655), not a 173ms steady window
-    expect(at(samples, 1550).forward).toBe(0) // and it still expires without repeats
-  })
-
-  it('a re-press after F2 starvation resets the phase to A (no steady-window sawtooth on the new hold)', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const events: Sched[] = [
-      { t: 0, key: 'w' },
-      ...repeats('w', 500, 998, 83), // phase B taught
-      { t: 1000, key: 'd' }, // F2: w starves; d's press grants w to 1655
-      { t: 1300, key: 'w' }, // player re-presses w: implausible 302ms gap = new physical hold
-      ...repeats('w', 1800, 2049, 83), // the new hold's own first repeat comes a full initialDelay later
-    ]
-    const samples = run(tracker, clock, events, 2300)
-    for (let t = 1350; t <= 2200; t += 50) {
-      // a persisted phase B would give the re-press a 173ms window and kill it
-      // inside the 500ms initial-repeat gap — the F3 sawtooth all over again
-      expect(at(samples, t).forward, `forward at t=${t}`).toBeGreaterThanOrEqual(0.9)
-    }
-  })
-})
-
-describe('movement envelope — phase A window and taper', () => {
-  it('PHASE_A margin pin: with the ×1.15+80 variant, a factory first repeat (500ms) lands while the envelope is still 1.0', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const samples = run(tracker, clock, [{ t: 0, key: 'w' }], 800)
-    expect(at(samples, 500).forward).toBe(1) // taper starts at 655−120 = 535 > 500
-    expect(at(samples, 550).forward).toBeLessThan(1) // tap without repeats begins tapering
-    expect(at(samples, 700).forward).toBe(0) // fully released by expiry + easing tail
-  })
-
-  it('a tap releases through the taper + easing: never a cliff (per-tick drop ≤ RELEASE_PER_TICK)', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    const samples = run(tracker, clock, [{ t: 0, key: 'w' }], 800)
-    const values = [...samples.values()].map((s) => s.forward)
-    const peak = Math.max(...values)
-    expect(peak).toBe(1)
-    for (let i = values.indexOf(peak) + 1; i < values.length; i++) {
-      const drop = values[i - 1]! - values[i]!
-      expect(drop).toBeGreaterThanOrEqual(0)
-      expect(drop).toBeLessThanOrEqual(0.3 + 1e-9)
-    }
-  })
-
-  it('attack easing: 0 → full within 2 samples of a fresh hold', () => {
+  it('resetTransient clears both latches (a respawn must not keep walking into the new facing)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     tracker.onKey({ key: 'w', kind: 'press' })
-    expect(tracker.sample(1).forward).toBe(0.55)
-    expect(tracker.sample(2).forward).toBe(1)
+    tracker.onKey({ key: 'd', kind: 'press' })
+    tracker.sample(1)
+    tracker.sample(2) // eased to full on both axes
+    tracker.resetTransient()
+    const s = tracker.sample(3)
+    expect(s.forward).toBe(0) // snapped, not eased
+    expect(s.strafe).toBe(0)
+    clock.set(5000)
+    expect(tracker.sample(4).forward).toBe(0) // stays 0 with no new events (latch cleared, not just smoothed)
   })
 
-  it('release events are ignored in tier 2 (legacy terminals never send them)', () => {
+  it('tier 1: the latch is inert — a press+release returns to 0 (no sticky walk)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onKey({ key: 'd', kind: 'press' })
-    tracker.onKey({ key: 'd', kind: 'release' }) // terminal quirk: must not clear the hold
-    clock.set(50)
-    expect(tracker.sample(1).strafe).toBeGreaterThan(0)
+    tracker.enableTier1()
+    tracker.onKey({ key: 'w', kind: 'press' })
+    expect(tracker.sample(1).forward).toBe(1)
+    tracker.onKey({ key: 'w', kind: 'release' })
+    expect(tracker.sample(2).forward).toBe(0) // real release stops instantly; the latch never engaged
   })
 })
 
@@ -632,5 +511,111 @@ describe('mapping — axes and fire combine', () => {
     tracker.sample(2)
     const s3 = tracker.sample(3)
     expect(s3).toEqual({ seq: 3, forward: 1, strafe: -1, turn: 0, fire: true })
+  })
+})
+
+describe('mouse aim (position → turn rate) — joystick, active in BOTH tiers', () => {
+  it('null until the first move → 0 turn contribution', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    expect(tracker.sample(1).turn).toBe(0)
+  })
+
+  it('dead-zone: |normX| ≤ 0.10 → exactly 0', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMove(0.10)
+    expect(tracker.sample(1).turn).toBe(0)
+    tracker.onMouseMove(-0.10)
+    expect(tracker.sample(2).turn).toBe(0)
+    tracker.onMouseMove(0.05)
+    expect(tracker.sample(3).turn).toBe(0)
+  })
+
+  it('edges: normX = ±1 → ±1 (full rate at the edge)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMove(1)
+    expect(tracker.sample(1).turn).toBe(1)
+    tracker.onMouseMove(-1)
+    expect(tracker.sample(2).turn).toBe(-1)
+  })
+
+  it('curve spot-check: normX = 0.55 → sign · 0.5^1.5 ≈ 0.35355', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMove(0.55) // t = (0.55 − 0.10)/0.90 = 0.5
+    expect(tracker.sample(1).turn).toBeCloseTo(Math.pow(0.5, 1.5), 12)
+    tracker.onMouseMove(-0.55)
+    expect(tracker.sample(2).turn).toBeCloseTo(-Math.pow(0.5, 1.5), 12)
+  })
+
+  it('keyboard turn + mouse turn sum clamps to [-1, 1]', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMove(1) // mouse alone = +1
+    tracker.onKey({ key: 'right', kind: 'press' }) // + a tap quantum (~0.46 next tick)
+    clock.set(50)
+    expect(tracker.sample(1).turn).toBe(1) // 1 + 0.46 clamped to 1, not 1.46
+  })
+
+  it('mouse aim is identical under tier 1 (does not touch tier state)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onMouseMove(0.55)
+    expect(tracker.sample(1).turn).toBeCloseTo(Math.pow(0.5, 1.5), 12)
+  })
+
+  it('resetTransient does NOT clear the mouse position (the pointer is still physically there)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMove(1)
+    tracker.resetTransient()
+    expect(tracker.sample(1).turn).toBe(1) // aim resumes from the current cursor
+  })
+})
+
+describe('mouse fire — real left-button press/release, active in BOTH tiers', () => {
+  it('left press → fire true next sample; release → false', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('left', 'press')
+    expect(tracker.sample(1).fire).toBe(true)
+    tracker.onMouseButton('left', 'release')
+    expect(tracker.sample(2).fire).toBe(false)
+  })
+
+  it('middle/right buttons never fire', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('right', 'press')
+    tracker.onMouseButton('middle', 'press')
+    expect(tracker.sample(1).fire).toBe(false)
+  })
+
+  it('resetTransient clears mouse-fire', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('left', 'press')
+    tracker.resetTransient()
+    expect(tracker.sample(1).fire).toBe(false)
+  })
+
+  it('space fire still works in tier 2 alongside mouse fire', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: ' ', kind: 'press' })
+    expect(tracker.sample(1).fire).toBe(true) // space latch unaffected by the mouse path
+  })
+
+  it('mouse fire works in tier 1 (alongside real space held)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onMouseButton('left', 'press')
+    expect(tracker.sample(1).fire).toBe(true)
+    tracker.onMouseButton('left', 'release')
+    expect(tracker.sample(2).fire).toBe(false)
   })
 })

@@ -35,21 +35,25 @@ describe('TerminalSession', () => {
     expect(rest.match(/\x1b\[\?1049l/g)).toHaveLength(1) // idempotent
   })
 
-  it('enter enables basic + SGR mouse reporting; restore disables both, in mirror order', () => {
+  it('enter enables the whole any-motion mouse ladder; restore disables it in exact mirror order', () => {
     const { stdin, stdout, written } = fakeStreams()
     const t = new TerminalSession(stdin, stdout)
     t.enter()
     const all = written.join('')
-    expect(all).toContain('\x1b[?1000h') // basic mouse reporting
-    expect(all).toContain('\x1b[?1006h') // SGR encoding
-    expect(all.indexOf('\x1b[?1000h')).toBeLessThan(all.indexOf('\x1b[?1006h'))
+    // request the full ladder in ascending order (1000 click → 1002 drag →
+    // 1003 any-motion → 1006 SGR encoding): terminals honor the highest they support
+    for (const mode of ['?1000h', '?1002h', '?1003h', '?1006h']) expect(all).toContain(`\x1b[${mode}`)
+    expect(all.indexOf('\x1b[?1000h')).toBeLessThan(all.indexOf('\x1b[?1002h'))
+    expect(all.indexOf('\x1b[?1002h')).toBeLessThan(all.indexOf('\x1b[?1003h'))
+    expect(all.indexOf('\x1b[?1003h')).toBeLessThan(all.indexOf('\x1b[?1006h'))
     written.length = 0
     t.restore()
     const rest = written.join('')
-    expect(rest).toContain('\x1b[?1006l')
-    expect(rest).toContain('\x1b[?1000l')
-    // mirror order of enter(): SGR was enabled last, so it's disabled first
-    expect(rest.indexOf('\x1b[?1006l')).toBeLessThan(rest.indexOf('\x1b[?1000l'))
+    // exact mirror (reverse) order: SGR disabled first, then 1003 → 1002 → 1000
+    for (const mode of ['?1006l', '?1003l', '?1002l', '?1000l']) expect(rest).toContain(`\x1b[${mode}`)
+    expect(rest.indexOf('\x1b[?1006l')).toBeLessThan(rest.indexOf('\x1b[?1003l'))
+    expect(rest.indexOf('\x1b[?1003l')).toBeLessThan(rest.indexOf('\x1b[?1002l'))
+    expect(rest.indexOf('\x1b[?1002l')).toBeLessThan(rest.indexOf('\x1b[?1000l'))
     // and mouse teardown happens before the alt-screen/kitty teardown completes
     expect(rest.indexOf('\x1b[?1000l')).toBeLessThan(rest.indexOf('\x1b[?1049l'))
   })

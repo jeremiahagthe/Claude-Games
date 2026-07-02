@@ -4,24 +4,27 @@ import type { KeyEvent } from './parser.js'
 
 const TRACKED = new Set(['w', 'a', 's', 'd', ' ', 'up', 'down', 'left', 'right'])
 
-// Three key classes with different tier-2 models (feel iteration 4):
+// Three key classes with different tier-2 models (feel iteration 5):
 // - TURN keys are event-driven two-mode (tap quanta / OS-repeat-confirmed
-//   hold). No envelope, no easing — budget conservation makes "one tap =
-//   exactly TURN_TAP_RAD of rotation" literally true in the sim.
-// - MOVEMENT keys are hold-inferred with phase windows (press → first repeat
-//   is a much longer gap than repeat → repeat) plus cross-key keep-alive,
-//   because macOS auto-repeats only the most recently pressed key (F2): an
-//   older, still-physically-held key produces no further events, ever.
-// - FIRE (space) is a per-event latch: no hold inference at all.
+//   hold), unchanged. No envelope, no easing — budget conservation makes "one
+//   tap = exactly TURN_TAP_RAD of rotation" literally true in the sim. Mouse
+//   position adds a joystick turn-rate on top of this (see onMouseMove).
+// - MOVEMENT keys are LATCHED (sticky): a tap starts continuous motion that
+//   persists with no further events, an opposing tap stops it, a second
+//   opposing tap reverses. Timing-free by design — Apple Terminal can't
+//   distinguish a press from an OS auto-repeat, and only auto-repeats ONE key
+//   at a time (F2), so any hold-inference model is unfixable. Latching needs
+//   neither.
+// - FIRE is a per-event space latch OR the real mouse-button state.
 const TURN_KEYS = new Set(['left', 'right'])
 const MOVEMENT_KEYS = new Set(['w', 'a', 's', 'd', 'up', 'down'])
 
-// Movement opposition pairs for the stop-first rule, and the smoothed axis
-// each pair rides on (a press-classified press instantly clears an opposing
-// live hold and snaps that axis to 0: tap-S = instant stop, hold-S = reverse).
-const OPPOSING: Record<string, string> = { w: 's', s: 'w', a: 'd', d: 'a', up: 'down', down: 'up' }
-const MOVE_AXIS: Record<string, 'forward' | 'strafe'> = {
-  w: 'forward', s: 'forward', up: 'forward', down: 'forward', a: 'strafe', d: 'strafe',
+// Each movement key's latch axis and direction. A tap toggles that axis
+// between 0 and its direction (opposing direction → 0, i.e. stop-first).
+const MOVE_LATCH: Record<string, { axis: 'forward' | 'strafe'; dir: 1 | -1 }> = {
+  w: { axis: 'forward', dir: 1 }, up: { axis: 'forward', dir: 1 },
+  s: { axis: 'forward', dir: -1 }, down: { axis: 'forward', dir: -1 },
+  d: { axis: 'strafe', dir: 1 }, a: { axis: 'strafe', dir: -1 },
 }
 
 // --- Turn constants ---------------------------------------------------------
@@ -35,25 +38,20 @@ const TURN_PENDING_CAP_RAD = 0.24
 // the emitted fraction × this, so emitted rotation === enqueued quanta.
 const TURN_TICK_RAD = 2.6 / 20
 
-// --- Movement envelope constants --------------------------------------------
-// A movement hold's envelope is 1.0 until TAPER_MS before its expiry, then
-// tapers linearly to 0 at expiry (replaces the old taperStartFor/decayFor).
-const TAPER_MS = 120
-// Per-20Hz-tick easing on movement axes only (turn is never eased).
+// --- Movement easing --------------------------------------------------------
+// Per-20Hz-tick easing on movement axes only (turn is never eased). The latch
+// is the sampled target; easing smooths the start/stop so a latch flip is a
+// short ramp, never an instant 0→±1 cliff.
 const ATTACK_PER_TICK = 0.55
 const RELEASE_PER_TICK = 0.3
-// Stop-first: an opposing press registers provisionally — long enough to read
-// as an intentional reverse only if the OS confirms the key is held.
-const PROVISIONAL_MS = 150
-// A movement key stops receiving cross-grants from NON-movement sources
-// (space/turn) once its own last event is older than this: bounds phantom
-// slide while standing and firing. Grants sourced from a currently-held
-// movement key are exempt — the tracker cannot distinguish "W+D both held"
-// from "W released while D held" (F2 keeps W silent either way), and uncapped
-// movement-source grants favor the far more common real-diagonal intent (S3);
-// the rare phantom diagonal after releasing one chord key is instantly
-// escapable via the stop-first opposing press.
-const CROSS_GRANT_SELF_CAP_MS = 1500
+
+// --- Mouse aim (position → turn rate; joystick, active in BOTH tiers) --------
+// normX is the pointer's horizontal offset from view center, in [-1, 1].
+// Inside the dead-zone the contribution is 0; outside, it rises as t^1.5 (fine
+// control near center, full rate at the edge). There is no pointer lock in any
+// terminal, so this is absolute-position joystick aim, not relative mouse-look.
+const AIM_DEADZONE = 0.10
+const AIM_EXPONENT = 1.5
 
 // --- Fire -------------------------------------------------------------------
 // Every space event latches fire for this long. Blaster cooldown is 500ms, so
@@ -65,13 +63,6 @@ const FIRE_LATCH_MS = 250
 // Tier-1 turn: a key still held (no release) this long after its press enters
 // hold mode (±1); a shorter press was a tap (one quantum).
 const TIER1_TURN_HOLD_MS = 150
-
-interface MoveHold {
-  expiresAt: number // envelope end (own-event window, possibly cross-granted)
-  lastSelfEvent: number // last event from THIS key (grants don't touch this)
-  sawRepeatThisHold: boolean // phase A (bridging press→first-repeat) vs B (repeat→repeat)
-  provisional: boolean // stop-first opposing press awaiting hold confirmation
-}
 
 interface TurnState {
   lastEvent: number
@@ -86,20 +77,22 @@ interface TurnState {
 export class IntentTracker {
   // Windows derived from the injected OS timings T (read once at startup by
   // os-timings.ts; injected so tests stay hermetic):
-  private readonly phaseAMs: number // bridges press → first repeat
-  private readonly steadyMs: number // bridges repeat → repeat
   private readonly holdBandMinMs: number // first-repeat confirmation band (lower)
   private readonly holdBandMaxMs: number // first-repeat confirmation band (upper)
   private readonly turnSteadyGapMs: number // turn: gap ≤ this = the OS repeating
   private readonly turnHoldDeathMs: number // turn hold dies with no own event for this long
-  private readonly repeatGrantMs: number // cross-grant from a repeat-classified event
 
   // Tier-2 state
-  private moveHolds = new Map<string, MoveHold>()
+  private latch: Record<'forward' | 'strafe', -1 | 0 | 1> = { forward: 0, strafe: 0 }
   private turns = new Map<string, TurnState>()
   private turnPending = 0 // signed rad budget: right +, left −; at most one sign live
   private fireUntil = -Infinity
   private smoothed: Record<'forward' | 'strafe', number> = { forward: 0, strafe: 0 }
+
+  // Mouse aim/fire (shared by both tiers; geometry is owned by offline.ts,
+  // which passes an already-normalized, already-clamped normX in [-1, 1]).
+  private mouseNormX: number | null = null // null until the first move → 0 turn
+  private mouseFireHeld = false
 
   // Tier-1 state (kitty protocol: real press/repeat/release)
   private tier1 = false
@@ -107,25 +100,14 @@ export class IntentTracker {
 
   constructor(private now: () => number, opts: { timings?: OsKeyTimings } = {}) {
     const t = opts.timings ?? FACTORY_TIMINGS
-    // PHASE_A margin choice: initialDelay×1.15 + 80 (≈655ms at factory), the
-    // brief's smaller variant. Taper then starts at initialDelay×1.15 − 40,
-    // which is AFTER the first repeat (≈initialDelay) whenever initialDelay >
-    // 267ms — at factory: 535 > 500, so an on-time first repeat lands while
-    // the envelope is still 1.0 (pinned in a test). A late first repeat
-    // (jitter) lands on the taper's early portion (envelope ≈0.79 at +60ms)
-    // and re-arms fully — a sub-tick dip at worst. Preferred over the +140
-    // variant because releases die 60ms sooner (less phantom slide per tap).
-    this.phaseAMs = t.initialDelayMs * 1.15 + 80
-    this.steadyMs = Math.min(900, Math.max(120, t.repeatIntervalMs * 1.6 + 40))
     // First-repeat confirmation band [0.9, 1.25]×initialDelay: asymmetric on
     // purpose. The OS's first repeat is never early, so 0.9 (not the naive
     // 0.75) keeps a 400ms human re-tap press-classified at factory settings
-    // ([450, 625]) while the ~500ms first repeat still confirms a hold.
+    // ([450, 625]) while the ~500ms first repeat still confirms a turn hold.
     this.holdBandMinMs = t.initialDelayMs * 0.9
     this.holdBandMaxMs = t.initialDelayMs * 1.25
     this.turnSteadyGapMs = Math.max(120, 1.3 * t.repeatIntervalMs)
     this.turnHoldDeathMs = Math.max(2 * t.repeatIntervalMs, 180)
-    this.repeatGrantMs = Math.max(350, 2 * t.repeatIntervalMs)
   }
 
   enableTier1(): void {
@@ -135,47 +117,80 @@ export class IntentTracker {
   }
 
   // Clears everything inferred/latched (turn budgets + hold modes, movement
-  // holds incl. provisional entries and phase flags, fire latch, smoothed
-  // axes). Called from enableTier1() and on self-death: a respawn must not
-  // drain stale turn budget into the new facing. Deliberately does NOT clear
-  // the tier-1 physical held map — those keys are ground truth (their
-  // releases will arrive), and a key still held across a respawn is live
-  // intent, not residue.
+  // latches, mouse-fire state, fire latch, smoothed axes). Called from
+  // enableTier1() and on self-death: a respawn must not drain stale turn budget
+  // or keep walking into the new facing. Deliberately does NOT clear the tier-1
+  // physical held map (those keys are ground truth — their releases will
+  // arrive) nor the stored mouse position (the pointer is still physically
+  // where it was, so aim resumes from the current cursor).
   resetTransient(): void {
-    this.moveHolds.clear()
+    this.latch = { forward: 0, strafe: 0 }
+    this.mouseFireHeld = false
     this.turns.clear()
     this.turnPending = 0
     this.fireUntil = -Infinity
     this.smoothed = { forward: 0, strafe: 0 }
   }
 
+  // ---- Mouse aim + fire (shared by both tiers) ------------------------------
+
+  // Stores the pointer's normalized horizontal offset from view center, already
+  // clamped to [-1, 1] by the caller (offline.ts owns the geometry).
+  onMouseMove(normX: number): void {
+    this.mouseNormX = normX
+  }
+
+  // Left button reports REAL press AND release (the only tier-2 input that
+  // does). Middle/right ignored for now; motion never toggles fire.
+  onMouseButton(button: 'left' | 'middle' | 'right' | 'none', action: 'press' | 'release' | 'motion'): void {
+    if (button !== 'left') return
+    if (action === 'press') this.mouseFireHeld = true
+    else if (action === 'release') this.mouseFireHeld = false
+  }
+
+  // Mouse joystick turn contribution in [-1, 1]: 0 inside the dead-zone, then
+  // sign · t^1.5 out to full rate at the edge. null (no move yet) → 0.
+  private mouseTurn(): number {
+    const n = this.mouseNormX
+    if (n === null) return 0
+    const a = Math.abs(n)
+    if (a <= AIM_DEADZONE) return 0
+    const t = (a - AIM_DEADZONE) / (1 - AIM_DEADZONE)
+    return Math.sign(n) * Math.pow(t, AIM_EXPONENT)
+  }
+
   onKey(e: KeyEvent): void {
-    if (!TRACKED.has(e.key)) return // untracked keys never touch state — including keep-alive
+    if (!TRACKED.has(e.key)) return // untracked keys never touch state
     if (this.tier1) {
       this.onKeyTier1(e)
       return
     }
     if (e.kind === 'release') return // tier 2: legacy terminals never send releases
-    // Tier 2: every non-release event ('press' covers both physical presses
-    // and OS auto-repeats — Apple Terminal can't tell them apart, so we
-    // classify by tracker state: press-classified = no live entry).
+    // Tier 2: 'press' covers both physical presses and OS auto-repeats — Apple
+    // Terminal can't tell them apart. Turn still classifies by timing; movement
+    // is latched (timing-free); space is a per-event fire latch.
     const now = this.now()
-    const pressClassified = this.handleOwnKeyTier2(e.key, now)
-    this.grantKeepAlive(e.key, pressClassified, now)
+    if (TURN_KEYS.has(e.key)) { this.onTurnEvent(e.key, now); return }
+    if (MOVEMENT_KEYS.has(e.key)) { this.onMovementLatch(e.key); return }
+    this.fireUntil = now + FIRE_LATCH_MS // space
+  }
+
+  // ---- Tier 2: movement latch ----------------------------------------------
+
+  // A movement-key event (press OR indistinguishable OS repeat — treated
+  // identically): active-direction repeat = no-op; axis at rest = start; axis
+  // opposite = stop (stop-first). A held opposing key thus reverses on its next
+  // OS repeat: tap = stop, hold = reverse. Intentional and timing-free.
+  private onMovementLatch(key: string): void {
+    const m = MOVE_LATCH[key]!
+    const cur = this.latch[m.axis]
+    if (cur === m.dir) return
+    this.latch[m.axis] = cur === 0 ? m.dir : 0
   }
 
   // ---- Tier 2: per-class own-key handling ----------------------------------
 
-  private handleOwnKeyTier2(key: string, now: number): boolean {
-    if (TURN_KEYS.has(key)) return this.onTurnEvent(key, now)
-    if (MOVEMENT_KEYS.has(key)) return this.onMovementEvent(key, now)
-    // space: the fire latch itself is the entry — live while the latch holds.
-    const pressClassified = now >= this.fireUntil
-    this.fireUntil = now + FIRE_LATCH_MS
-    return pressClassified
-  }
-
-  private onTurnEvent(key: string, now: number): boolean {
+  private onTurnEvent(key: string, now: number): void {
     const sign = key === 'right' ? 1 : -1
     // Opposite-direction event: instantly zero the other direction's pending
     // and kill its hold mode — a correction must never fight stale intent.
@@ -190,7 +205,7 @@ export class IntentTracker {
     if (st === undefined || gap > this.holdBandMaxMs) {
       this.turns.set(key, { lastEvent: now, prevWasPress: true, hold: false })
       this.enqueueTurnQuantum(sign)
-      return true
+      return
     }
     if (st.hold && gap >= this.turnHoldDeathMs) st.hold = false // stale hold: died between samples
     const firstRepeat = st.prevWasPress && gap >= this.holdBandMinMs // ≤ holdBandMaxMs guaranteed above
@@ -211,7 +226,6 @@ export class IntentTracker {
       this.enqueueTurnQuantum(sign)
     }
     st.lastEvent = now
-    return false
   }
 
   private enqueueTurnQuantum(sign: number): void {
@@ -219,110 +233,7 @@ export class IntentTracker {
     this.turnPending = Math.max(-TURN_PENDING_CAP_RAD, Math.min(TURN_PENDING_CAP_RAD, next))
   }
 
-  private onMovementEvent(key: string, now: number): boolean {
-    let h = this.moveHolds.get(key)
-    if (h && now >= h.expiresAt) {
-      this.moveHolds.delete(key)
-      h = undefined
-    }
-    if (h === undefined) {
-      // Press-classified (fresh press after full expiry).
-      // Stop-first: clear an opposing live hold and snap the shared axis to 0;
-      // this press then only registers provisionally — a tap-to-stop must not
-      // read as a sustained reverse until the OS proves the key is held.
-      const opp = this.moveHolds.get(OPPOSING[key]!)
-      const opposingLive = opp !== undefined && now < opp.expiresAt
-      if (opposingLive) {
-        this.moveHolds.delete(OPPOSING[key]!)
-        this.smoothed[MOVE_AXIS[key]!] = 0
-      }
-      this.moveHolds.set(key, {
-        expiresAt: now + (opposingLive ? PROVISIONAL_MS : this.phaseAMs),
-        lastSelfEvent: now,
-        sawRepeatThisHold: false,
-        provisional: opposingLive,
-      })
-      return true
-    }
-    // Repeat-classified own event on a live entry.
-    const gap = now - h.lastSelfEvent
-    if (h.provisional) {
-      // The OS cannot repeat faster than initialDelay (≥ the 150ms clamp
-      // floor), so any own event within the provisional window is human — a
-      // real reverse intent: upgrade to a normal phase-A hold.
-      h.provisional = false
-      h.sawRepeatThisHold = false
-      h.expiresAt = now + this.phaseAMs
-    } else {
-      // Plausible OS-repeat gap: steady cadence, or (only while still in
-      // phase A) the first repeat landing in the initialDelay band. An
-      // implausible gap means the repeat chain broke — the key was released
-      // and re-pressed (or starved by F2 and re-pressed) — so this is a NEW
-      // physical hold: back to phase A, or the fresh press would die inside
-      // the next 500ms initial-repeat gap (the F3 sawtooth, again).
-      const plausible =
-        gap <= 1.6 * this.steadyMs ||
-        (!h.sawRepeatThisHold && gap >= this.holdBandMinMs && gap <= this.holdBandMaxMs)
-      h.sawRepeatThisHold = plausible
-      // A window must bridge its gap at FULL strength (the S1/S3 ground-truth
-      // traces assert ≥0.9 at every mid-chain tick). PHASE_A already contains
-      // its taper: taper start = initialDelay×1.15 − 40 lands after the first
-      // repeat (535 > 500 at factory). STEADY (≈173ms) minus the 120ms taper
-      // would leave only ~53ms of full strength — less than the 83ms repeat
-      // gap — so phase B appends the taper AFTER the bridge instead of inside
-      // it: full strength spans repeat → repeat (surviving even one dropped
-      // repeat), then the taper is the release tail.
-      h.expiresAt = now + (plausible ? this.steadyMs + TAPER_MS : this.phaseAMs)
-    }
-    h.lastSelfEvent = now
-    return false
-  }
-
-  // Cross-key keep-alive (F2): any tracked-key event proves the user's hands
-  // are on the keyboard, so every OTHER currently-held movement key gets its
-  // expiry extended — the OS has silenced those keys, not the user. Turn keys
-  // and space are never granted (turn: a stalled turn is re-pressable, a
-  // phantom spin while aiming is fatal; space: the fire latch is per-event).
-  private grantKeepAlive(sourceKey: string, pressClassified: boolean, now: number): void {
-    // A movement source's own entry was registered/refreshed this same event,
-    // so it is always live here — movement sources are exempt from the
-    // self-event cap (see CROSS_GRANT_SELF_CAP_MS).
-    const capped = !MOVEMENT_KEYS.has(sourceKey)
-    const grant = pressClassified ? this.phaseAMs : this.repeatGrantMs
-    for (const [key, h] of this.moveHolds) {
-      if (key === sourceKey) continue
-      if (now >= h.expiresAt) {
-        this.moveHolds.delete(key)
-        continue
-      }
-      // A provisional stop-tap must expire on its own terms: keeping it alive
-      // via a chord partner's repeats would turn every stop-tap into a
-      // sustained phantom reverse. Its own next event upgrades it instead.
-      if (h.provisional) continue
-      if (capped && now - h.lastSelfEvent > CROSS_GRANT_SELF_CAP_MS) continue
-      h.expiresAt = Math.max(h.expiresAt, now + grant)
-    }
-  }
-
   // ---- Tier 2: sampling helpers ---------------------------------------------
-
-  // Movement envelope: 1.0 until TAPER_MS before expiry, linear to 0 at expiry.
-  private moveEnvelope(key: string, now: number): number {
-    const h = this.moveHolds.get(key)
-    if (!h) return 0
-    const remaining = h.expiresAt - now
-    if (remaining <= 0) {
-      this.moveHolds.delete(key)
-      return 0
-    }
-    return remaining >= TAPER_MS ? 1 : remaining / TAPER_MS
-  }
-
-  private maxEnvelope(keys: string[], now: number): number {
-    let m = 0
-    for (const k of keys) m = Math.max(m, this.moveEnvelope(k, now))
-    return m
-  }
 
   // Turn axis: hold mode is continuous ±1; otherwise drain the pending tap
   // budget by exactly what this tick's rotation capacity allows. No easing on
@@ -408,21 +319,22 @@ export class IntentTracker {
 
   sample(seq: number): PlayerInput {
     const now = this.now()
+    // Mouse aim and fire are identical in both tiers (they never touch tier
+    // state). makeInput clamps the keyboard+mouse turn sum to [-1, 1].
+    const mouseTurn = this.mouseTurn()
     if (this.tier1) {
       return makeInput(seq, {
         forward: this.t1BinaryAxis(['w', 'up'], ['s', 'down']),
         strafe: this.t1BinaryAxis(['d'], ['a']),
-        turn: this.turnAxisTier1(now),
-        fire: this.t1Held.has(' '),
+        turn: this.turnAxisTier1(now) + mouseTurn,
+        fire: this.t1Held.has(' ') || this.mouseFireHeld,
       })
     }
-    const forwardRaw = this.maxEnvelope(['w', 'up'], now) - this.maxEnvelope(['s', 'down'], now)
-    const strafeRaw = this.moveEnvelope('d', now) - this.moveEnvelope('a', now)
     return makeInput(seq, {
-      forward: this.ease('forward', Math.max(-1, Math.min(1, forwardRaw))),
-      strafe: this.ease('strafe', Math.max(-1, Math.min(1, strafeRaw))),
-      turn: this.turnAxisTier2(now),
-      fire: now < this.fireUntil,
+      forward: this.ease('forward', this.latch.forward),
+      strafe: this.ease('strafe', this.latch.strafe),
+      turn: this.turnAxisTier2(now) + mouseTurn,
+      fire: now < this.fireUntil || this.mouseFireHeld,
     })
   }
 }

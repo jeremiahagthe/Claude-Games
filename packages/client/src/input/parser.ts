@@ -1,5 +1,17 @@
 export interface KeyEvent { key: string; kind: 'press' | 'repeat' | 'release' }
 
+// SGR mouse report (only MouseEvent carries a `type` field, so the union
+// discriminates on `'type' in e`). x/y are 1-based terminal cell coordinates.
+export interface MouseEvent {
+  type: 'mouse'
+  x: number
+  y: number
+  button: 'left' | 'middle' | 'right' | 'none'
+  action: 'press' | 'release' | 'motion'
+}
+
+export type InputEvent = KeyEvent | MouseEvent
+
 const ARROWS: Record<string, string> = { A: 'up', B: 'down', C: 'right', D: 'left' }
 const CODES: Record<number, string> = { 32: ' ', 27: 'esc', 13: 'enter', 9: 'tab', 127: 'backspace' }
 const EVENTS: Record<string, KeyEvent['kind']> = { '1': 'press', '2': 'repeat', '3': 'release' }
@@ -8,9 +20,9 @@ const MAX_BUF = 64
 export class KeyParser {
   private buf = ''
 
-  feed(chunk: Buffer | string): KeyEvent[] {
+  feed(chunk: Buffer | string): InputEvent[] {
     this.buf += chunk.toString('utf8')
-    const out: KeyEvent[] = []
+    const out: InputEvent[] = []
     while (this.buf.length > 0) {
       const ch = this.buf[0]!
       if (ch === '\x1b') {
@@ -47,7 +59,11 @@ export class KeyParser {
     return out
   }
 
-  private decodeCsi(params: string, final: string): KeyEvent | null {
+  private decodeCsi(params: string, final: string): InputEvent | null {
+    // SGR mouse: `CSI < b ; x ; y M` (press/motion) or `... m` (release).
+    if (params.startsWith('<') && (final === 'M' || final === 'm')) {
+      return decodeMouse(params.slice(1), final)
+    }
     if (final === 'u') {
       if (params.startsWith('?')) return { key: 'kitty-ack', kind: 'press' }
       const [codePart, modPart] = params.split(';')
@@ -61,12 +77,25 @@ export class KeyParser {
       const kind = EVENTS[params.split(';')[1]?.split(':')[1] ?? '1'] ?? 'press'
       return { key: ARROWS[final]!, kind }
     }
-    // SGR mouse reports (`ESC [ < params M` for press/motion, `... m` for release,
-    // enabled by terminal.ts's ?1000h+?1006h) land here: final 'M'/'m' isn't 'u' or
-    // an arrow, so they're swallowed with no KeyEvent — same as any other unknown
-    // CSI. The digit/`;`/`<` params never contain the final byte's 0x40-0x7e range,
-    // so the CSI end-scan in feed() above always finds the true terminator, even
-    // when a sequence is split across feed() chunks or followed by more keys.
     return null // unknown CSI swallowed
   }
+}
+
+// Decodes the body of an SGR mouse report (`params` is everything between the
+// leading `<` and the final `M`/`m`, e.g. "0;10;20"). Returns null — emitting
+// nothing — for wheel/trackpad-scroll reports and any malformed frame, never
+// throwing and never leaking partial bytes (the caller already stripped the
+// full CSI from the buffer via the 0x40-0x7e end-scan, which the `<`/`;`/digit
+// params can never trip early).
+function decodeMouse(params: string, final: string): MouseEvent | null {
+  const parts = params.split(';')
+  if (parts.length !== 3 || !parts.every((p) => /^\d+$/.test(p))) return null // malformed
+  const b = Number(parts[0])
+  const x = Number(parts[1])
+  const y = Number(parts[2])
+  if (b & 64) return null // wheel (64/65, ± motion bit): trackpad scroll must not become input
+  const lowBits = b & 3
+  const button = lowBits === 0 ? 'left' : lowBits === 1 ? 'middle' : lowBits === 2 ? 'right' : 'none'
+  const action = b & 32 ? 'motion' : final === 'M' ? 'press' : 'release'
+  return { type: 'mouse', x, y, button, action }
 }
