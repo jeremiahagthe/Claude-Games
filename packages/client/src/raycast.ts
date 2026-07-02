@@ -1,4 +1,4 @@
-import { type GameMap, type MatchState, fnv1a, isWall, wrapAngle } from '@fragwait/core'
+import { type GameMap, type MatchState, fnv1a, isWall, wrapAngle, MAX_WALL_DIST } from '@fragwait/core'
 import type { FrameBuffer } from './framebuffer.js'
 
 export const FOV = Math.PI / 3
@@ -32,8 +32,8 @@ export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, sel
     let sideX = dx < 0 ? (me.pos.x - cx) * deltaX : (cx + 1 - me.pos.x) * deltaX
     let sideY = dy < 0 ? (me.pos.y - cy) * deltaY : (cy + 1 - me.pos.y) * deltaY
     let side: 0 | 1 = 0
-    let dist = 64
-    for (let i = 0; i < 256; i++) {
+    let dist = MAX_WALL_DIST
+    for (let i = 0; i < 4 * MAX_WALL_DIST; i++) {
       if (sideX < sideY) { sideX += deltaX; cx += stepX; side = 0 } else { sideY += deltaY; cy += stepY; side = 1 }
       if (isWall(map, cx, cy)) { dist = side === 0 ? sideX - deltaX : sideY - deltaY; break }
     }
