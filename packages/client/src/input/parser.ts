@@ -10,7 +10,7 @@ export class KeyParser {
 
   feed(chunk: Buffer | string): KeyEvent[] {
     this.buf += chunk.toString('utf8')
-    if (this.buf.length > MAX_BUF) this.buf = this.buf.slice(-8) // resync: keep only a plausible partial sequence tail
+    if (this.buf.length > MAX_BUF) this.buf = '' // resync: drop garbage entirely — never leak bytes as key events
     const out: KeyEvent[] = []
     while (this.buf.length > 0) {
       const ch = this.buf[0]!
