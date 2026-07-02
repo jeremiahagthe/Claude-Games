@@ -3,6 +3,7 @@ import {
 } from '@fragwait/core'
 import { hostname } from 'node:os'
 import { detectColorMode, viewSize } from './caps.js'
+import { busyElapsedSeconds, startClaudeListener } from './claude.js'
 import { FrameBuffer, TermRenderer } from './framebuffer.js'
 import { KillFeed, hudRows } from './hud.js'
 import { IntentTracker } from './input/intent.js'
@@ -34,6 +35,13 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
   let quit = false
   let ended = false
 
+  const listener = await startClaudeListener()
+  listener.onEvent((event) => {
+    banner = event === 'done'
+      ? '✔ Claude is done — Enter: quit & return · Esc: dismiss'
+      : '⚠ Claude needs your input — Enter: quit & return'
+  })
+
   let { viewCols, viewRows } = viewSize(process.stdout.columns ?? 80, process.stdout.rows ?? 24)
   let fb = new FrameBuffer(viewCols, viewRows * 2)
   const renderer = new TermRenderer(detectColorMode(process.env))
@@ -49,6 +57,7 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
   const onData = (chunk: Buffer) => {
     for (const e of parser.feed(chunk)) {
       if (e.key === 'kitty-ack') intent.enableTier1()
+      else if (e.key === 'esc' && e.kind === 'press' && banner) banner = null // dismiss banner, don't quit
       else if ((e.key === 'q' || e.key === 'esc' || e.key === 'ctrl-c') && e.kind === 'press') quit = true
       else if (e.key === 'enter' && banner) quit = true
       else if (e.key === 'tab' && e.kind !== 'release') scoreboardHeld = 8 // ~400ms of scoreboard per Tab press
@@ -61,6 +70,8 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
   term.installExitGuards(() => {})
 
   let seq = 0
+  let busySeconds: number | null = null
+  let lastBusyPoll = 0
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
       if (quit || room.finished) {
@@ -72,9 +83,14 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
       for (const b of bots) room.queueInput(b.id, [b.think(room.state, room.map)])
       for (const k of room.tick()) feed.push(k, room.state)
 
+      if (performance.now() - lastBusyPoll > 1000) {
+        busySeconds = busyElapsedSeconds()
+        lastBusyPoll = performance.now()
+      }
+
       renderView(fb, room.map, room.state, selfId)
       let out = renderer.frame(fb)
-      const { top, bottom } = hudRows(room.state, selfId, viewCols, null, feed)
+      const { top, bottom } = hudRows(room.state, selfId, viewCols, busySeconds, feed)
       out += `${ESC}[${viewRows + 1};1H${ESC}[0;7m${top}${ESC}[0m`
       out += `${ESC}[${viewRows + 2};1H${bottom[0]}${ESC}[${viewRows + 3};1H${bottom[1]}`
       if (banner) out += `${ESC}[2;3H${ESC}[1;7m ${banner} ${ESC}[0m`
@@ -90,6 +106,7 @@ export async function runOffline(opts: { name?: string }): Promise<void> {
     await new Promise<void>((r) => process.stdin.once('data', () => r()))
   }
   process.stdout.off('resize', onResize)
+  await listener.close()
   term.restore()
   process.exit(0)
 }
