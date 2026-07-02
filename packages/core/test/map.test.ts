@@ -60,6 +60,9 @@ describe('built-in maps', () => {
       }
       for (const s of m.spawns) expect(seen.has(`${Math.floor(s.x)},${Math.floor(s.y)}`)).toBe(true)
       expect(seen.has(`${Math.floor(m.railSpawn.x)},${Math.floor(m.railSpawn.y)}`)).toBe(true)
+      // no disconnected floor pockets: every non-wall cell must be reachable from spawns[0]
+      const floorCount = m.walls.filter((w) => !w).length
+      expect(seen.size).toBe(floorCount)
     })
   }
 })

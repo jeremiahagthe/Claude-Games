@@ -31,6 +31,33 @@ describe('BotBrain', () => {
     expect(totalFrags).toBeGreaterThan(3) // 3 minutes of 4 aggressive bots must produce kills
   })
 
+  it('bots stay mobile: stuck-ticks stay below 30% of bot-ticks on every map (mobility smoke)', () => {
+    const maxStuckRatio = 0.3
+    const ticks = 1200 // 1 minute at 20 tps
+    for (const mapId of ['node_modules', 'legacy_monolith', 'microservices'] as const) {
+      const map = mapById(mapId)
+      const room = new MatchRoom(map, 900)
+      const brains = [0, 1, 2, 3].map((i) => {
+        room.addPlayer(`bot${i}`, `bot-${i}`, true)
+        return new BotBrain(`bot${i}`, 200 + i, 0.6)
+      })
+      let stuckTicks = 0
+      for (let t = 0; t < ticks; t++) {
+        const before = new Map(brains.map((b) => [b.id, { ...room.state.players[b.id]!.pos }]))
+        for (const b of brains) room.queueInput(b.id, [b.think(room.state, room.map)])
+        room.tick()
+        for (const b of brains) {
+          const prev = before.get(b.id)!
+          const now = room.state.players[b.id]!.pos
+          if (prev.x === now.x && prev.y === now.y) stuckTicks++
+        }
+      }
+      const botTicks = brains.length * ticks
+      const ratio = stuckTicks / botTicks
+      expect(ratio, `${mapId}: stuck ratio ${(ratio * 100).toFixed(1)}%`).toBeLessThan(maxStuckRatio)
+    }
+  })
+
   it('bots are deterministic per seed', () => {
     const run = () => {
       const room = new MatchRoom(mapById('microservices'), 11)
