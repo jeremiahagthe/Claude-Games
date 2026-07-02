@@ -47,4 +47,15 @@ describe('TermRenderer diffing', () => {
     const out = new TermRenderer('mono').frame(fb)
     expect(out).toContain('@')
   })
+  it('a horizontal run of changed cells emits one cursor address', () => {
+    const fb = new FrameBuffer(6, 2) // 6 cols x 1 text row
+    fb.fill(0, 0, 0)
+    const r = new TermRenderer('truecolor')
+    r.frame(fb)
+    for (const x of [2, 3, 4]) fb.set(x, 0, 255, 0, 0) // contiguous run in row 0
+    const out = r.frame(fb)
+    expect(out.match(/\x1b\[\d+;\d+H/g)).toHaveLength(1) // single address
+    expect(out).toContain('\x1b[1;3H') // run starts at row 1, col 3
+    expect(out.split('▀').length - 1).toBe(3) // three cells emitted
+  })
 })
