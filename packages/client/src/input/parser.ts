@@ -10,7 +10,6 @@ export class KeyParser {
 
   feed(chunk: Buffer | string): KeyEvent[] {
     this.buf += chunk.toString('utf8')
-    if (this.buf.length > MAX_BUF) this.buf = '' // resync: drop garbage entirely — never leak bytes as key events
     const out: KeyEvent[] = []
     while (this.buf.length > 0) {
       const ch = this.buf[0]!
@@ -42,6 +41,9 @@ export class KeyParser {
       else if (ch >= ' ' && ch <= '~') out.push({ key: ch.toLowerCase(), kind: 'press' })
       // other control bytes: ignore
     }
+    // cap only the unparseable remainder: a real partial sequence is <16 bytes,
+    // so anything larger is stuck garbage — drop it entirely, never re-parse it
+    if (this.buf.length > MAX_BUF) this.buf = ''
     return out
   }
 

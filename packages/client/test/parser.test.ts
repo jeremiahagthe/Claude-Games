@@ -54,4 +54,11 @@ describe('KeyParser', () => {
     expect(p.feed('\x1b[' + '1;'.repeat(200))).toEqual([]) // capping feed leaks nothing
     expect(p.feed('w')).toEqual([{ key: 'w', kind: 'press' }]) // parser recovered
   })
+  it('a large burst of valid input is fully parsed, not dropped by the cap', () => {
+    const p = new KeyParser()
+    const burst = '\x1b[97;1:1u\x1b[97;1:2u'.repeat(10) // 20 valid kitty events, ~200 bytes
+    const events = p.feed(burst)
+    expect(events).toHaveLength(20)
+    expect(events.every((e) => e.key === 'a')).toBe(true)
+  })
 })
