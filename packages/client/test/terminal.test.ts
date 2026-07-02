@@ -35,6 +35,25 @@ describe('TerminalSession', () => {
     expect(rest.match(/\x1b\[\?1049l/g)).toHaveLength(1) // idempotent
   })
 
+  it('enter enables basic + SGR mouse reporting; restore disables both, in mirror order', () => {
+    const { stdin, stdout, written } = fakeStreams()
+    const t = new TerminalSession(stdin, stdout)
+    t.enter()
+    const all = written.join('')
+    expect(all).toContain('\x1b[?1000h') // basic mouse reporting
+    expect(all).toContain('\x1b[?1006h') // SGR encoding
+    expect(all.indexOf('\x1b[?1000h')).toBeLessThan(all.indexOf('\x1b[?1006h'))
+    written.length = 0
+    t.restore()
+    const rest = written.join('')
+    expect(rest).toContain('\x1b[?1006l')
+    expect(rest).toContain('\x1b[?1000l')
+    // mirror order of enter(): SGR was enabled last, so it's disabled first
+    expect(rest.indexOf('\x1b[?1006l')).toBeLessThan(rest.indexOf('\x1b[?1000l'))
+    // and mouse teardown happens before the alt-screen/kitty teardown completes
+    expect(rest.indexOf('\x1b[?1000l')).toBeLessThan(rest.indexOf('\x1b[?1049l'))
+  })
+
   it('installExitGuards is idempotent — a second call does not stack duplicate process listeners', () => {
     const { stdin, stdout } = fakeStreams()
     const t = new TerminalSession(stdin, stdout)

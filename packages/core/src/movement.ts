@@ -9,8 +9,21 @@ export function wrapAngle(a: number): number {
   return r
 }
 
+// Clamps an analog axis to [-1, 1]; non-finite input (NaN, ±Infinity) becomes 0.
+function clampAxis(v: number | undefined): number {
+  if (v === undefined) return 0
+  if (!Number.isFinite(v)) return 0
+  return Math.max(-1, Math.min(1, v))
+}
+
 export function makeInput(seq: number, partial: Partial<Omit<PlayerInput, 'seq'>> = {}): PlayerInput {
-  return { seq, forward: 0, strafe: 0, turn: 0, fire: false, ...partial }
+  return {
+    seq,
+    forward: clampAxis(partial.forward),
+    strafe: clampAxis(partial.strafe),
+    turn: clampAxis(partial.turn),
+    fire: partial.fire ?? false,
+  }
 }
 
 function collides(map: GameMap, x: number, y: number): boolean {
@@ -37,8 +50,11 @@ export function stepPlayer(p: PlayerState, input: PlayerInput, map: GameMap): vo
   let dy = Math.sin(p.dir) * input.forward + Math.sin(p.dir + Math.PI / 2) * input.strafe
   const len = Math.hypot(dx, dy)
   if (len > 0) {
-    dx = (dx / len) * MOVE_SPEED
-    dy = (dy / len) * MOVE_SPEED
+    // Scale by input magnitude (analog forward/strafe) but never exceed
+    // MOVE_SPEED — keeps diagonal movement no faster than straight movement.
+    const speed = MOVE_SPEED * Math.min(1, len)
+    dx = (dx / len) * speed
+    dy = (dy / len) * speed
     if (!collides(map, p.pos.x + dx, p.pos.y)) p.pos.x += dx
     if (!collides(map, p.pos.x, p.pos.y + dy)) p.pos.y += dy
   }

@@ -61,6 +61,12 @@ export class KeyParser {
       const kind = EVENTS[params.split(';')[1]?.split(':')[1] ?? '1'] ?? 'press'
       return { key: ARROWS[final]!, kind }
     }
+    // SGR mouse reports (`ESC [ < params M` for press/motion, `... m` for release,
+    // enabled by terminal.ts's ?1000h+?1006h) land here: final 'M'/'m' isn't 'u' or
+    // an arrow, so they're swallowed with no KeyEvent — same as any other unknown
+    // CSI. The digit/`;`/`<` params never contain the final byte's 0x40-0x7e range,
+    // so the CSI end-scan in feed() above always finds the true terminator, even
+    // when a sequence is split across feed() chunks or followed by more keys.
     return null // unknown CSI swallowed
   }
 }

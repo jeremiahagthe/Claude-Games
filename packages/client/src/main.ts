@@ -3,5 +3,5 @@ import { runOffline } from './offline.js'
 
 export async function main(opts: CliOpts): Promise<void> {
   // Milestone C (Task 22) adds: try online first unless --offline
-  await runOffline({ name: opts.name, mute: opts.mute })
+  await runOffline({ name: opts.name, mute: opts.mute, difficulty: opts.difficulty })
 }

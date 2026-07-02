@@ -1,4 +1,5 @@
 import { castWall } from './combat.js'
+import { AIM_WANDER_TICKS, AIM_WOBBLE, REACTION_TICKS_SCALE, RESIGHT_GAP_TICKS } from './constants.js'
 import type { GameMap } from './map.js'
 import { isWall } from './map.js'
 import { makeInput, wrapAngle } from './movement.js'
@@ -10,6 +11,12 @@ const AIM_FIRE_CONE = 0.15 // radians
 const WAYPOINT_REACHED = 0.7
 const STUCK_WINDOW = 10 // think() calls considered for stuck-recovery
 const STUCK_DIST = 0.05 // net cells of movement below which a roaming bot is "stuck"
+
+// Ticks a bot must wait after first sighting an enemy before it's allowed to fire
+// (it may still turn toward the enemy during this window). skill 0.3 -> 8 ticks (400ms).
+function reactionTicks(skill: number): number {
+  return Math.round((1 - skill) * REACTION_TICKS_SCALE)
+}
 
 // Floor cells reachable from map.spawns[0] via 4-neighbor flood fill, computed lazily
 // once per map and cached by map.id so BotBrain never roams toward walled-off pockets.
@@ -39,6 +46,10 @@ export class BotBrain {
   private waypoint: Vec2 | null = null
   private seq = 0
   private posHistory: Vec2[] = []
+  private lastVisibleTick = -Infinity // state.tick this bot last saw any enemy
+  private sightingTick = -Infinity // state.tick the current sighting streak began
+  private wanderNoise = 0
+  private wanderResampleTick = -Infinity
 
   constructor(readonly id: string, seed: number, private skill = 0.45) {
     this.rng = mulberry32(seed)
@@ -51,16 +62,30 @@ export class BotBrain {
     const enemy = this.visibleEnemy(me, state, map)
     if (enemy) {
       this.trackPosition(me.pos)
+
+      // A gap of >= RESIGHT_GAP_TICKS without any visible enemy counts as a fresh
+      // sighting (reaction delay restarts); a brief loss of line-of-sight doesn't.
+      if (state.tick - this.lastVisibleTick >= RESIGHT_GAP_TICKS) this.sightingTick = state.tick
+      this.lastVisibleTick = state.tick
+      const reactionElapsed = state.tick - this.sightingTick >= reactionTicks(this.skill)
+
+      // Wander noise is resampled every AIM_WANDER_TICKS ticks and held constant
+      // in between, so the bot genuinely points wrong for ~300ms stretches
+      // instead of the noise averaging out tick-to-tick.
+      if (state.tick - this.wanderResampleTick >= AIM_WANDER_TICKS) {
+        this.wanderNoise = (this.rng() - 0.5) * 2 * (1 - this.skill) * AIM_WOBBLE
+        this.wanderResampleTick = state.tick
+      }
+
       const trueAngle = Math.atan2(enemy.pos.y - me.pos.y, enemy.pos.x - me.pos.x)
-      const noise = (this.rng() - 0.5) * (1 - this.skill) * 0.5
-      const desired = wrapAngle(trueAngle + noise)
+      const desired = wrapAngle(trueAngle + this.wanderNoise)
       const diff = wrapAngle(desired - me.dir)
       const dist = Math.hypot(enemy.pos.x - me.pos.x, enemy.pos.y - me.pos.y)
       return makeInput(++this.seq, {
         turn: diff > 0.05 ? 1 : diff < -0.05 ? -1 : 0,
         forward: dist > 5 ? 1 : dist < 2.5 ? -1 : 0,
         strafe: this.rng() < 0.3 ? (this.rng() < 0.5 ? 1 : -1) : 0,
-        fire: Math.abs(diff) < AIM_FIRE_CONE && this.rng() < 0.4 + this.skill * 0.4,
+        fire: reactionElapsed && Math.abs(diff) < AIM_FIRE_CONE && this.rng() < 0.15 + this.skill * 0.5,
       })
     }
 

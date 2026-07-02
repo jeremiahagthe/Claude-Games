@@ -1,19 +1,12 @@
 import { doctorReport } from './doctor.js'
+import { parseArgs } from './cliArgs.js'
 
-export interface CliOpts { mode: 'play' | 'doctor'; offline: boolean; name?: string; server?: string; mute: boolean }
-
-export function parseArgs(argv: string[]): CliOpts {
-  const opts: CliOpts = { mode: 'play', offline: false, mute: false }
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    if (a === 'doctor') opts.mode = 'doctor'
-    else if (a === '--offline') opts.offline = true
-    else if (a === '--name') opts.name = argv[++i]
-    else if (a === '--server') opts.server = argv[++i]
-    else if (a === '--mute') opts.mute = true
-  }
-  return opts
-}
+// parseArgs/CliOpts live in cliArgs.js (pure, no side effects) so tests can
+// import them directly — this module always runs its dispatch on import
+// (mirrors bin/fragwait.js's unconditional `import('../dist/cli.js')`), so it
+// must never be imported outside the real entry point.
+export type { CliOpts } from './cliArgs.js'
+export { parseArgs } from './cliArgs.js'
 
 const opts = parseArgs(process.argv.slice(2))
 if (opts.mode === 'doctor') {

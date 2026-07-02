@@ -13,10 +13,26 @@ const MAX_DECAY_MS = 600
 const DECAY_SLOPE = 1.6
 const DECAY_INTERCEPT_MS = 40
 
+// Tier-2 tap envelope: a key's intent stays at full strength for FULL_INTENT_MS
+// after it was last seen, then tapers linearly to 0 by its decay window. This
+// turns a tap (registered for the full initial decay window with no repeat)
+// into a short, tapering impulse instead of 450ms of full-strength input, and
+// keeps a slow first OS repeat from reading as a hard stop.
+const FULL_INTENT_MS = 140
+
+// Per-tick (20Hz sim tick) easing applied on top of the envelope: the sampled
+// axis moves toward the raw envelope-derived value by at most this much per
+// sample() call — faster while building up (attack) than releasing.
+const ATTACK_PER_TICK = 0.4
+const RELEASE_PER_TICK = 0.3
+
+type Axis = 'forward' | 'strafe' | 'turn'
+
 export class IntentTracker {
   private held = new Map<string, number>() // key -> last seen at (ms)
   private lastInterval = new Map<string, number>() // key -> last observed press/repeat interval (ms)
   private tier1 = false
+  private smoothed: Record<Axis, number> = { forward: 0, strafe: 0, turn: 0 }
 
   // decayMs is the INITIAL decay window used before any interval has been
   // observed for a key (bridges macOS's initial repeat delay, ~250-500ms).
@@ -26,6 +42,7 @@ export class IntentTracker {
     this.tier1 = true
     this.held.clear() // tier-2 entries have no reliable release; start clean
     this.lastInterval.clear()
+    this.smoothed = { forward: 0, strafe: 0, turn: 0 }
   }
 
   onKey(e: KeyEvent): void {
@@ -56,16 +73,65 @@ export class IntentTracker {
     return true
   }
 
+  // Tier-2 only: 0 if not held; 1.0 while age <= FULL_INTENT_MS; then tapers
+  // linearly to 0 by the key's (adaptive) decay window. Tier 1 has real release
+  // events, so it stays exactly binary and doesn't call this.
+  private envelope(key: string): number {
+    const t = this.held.get(key)
+    if (t === undefined) return 0
+    const age = this.now() - t
+    const decay = this.decayFor(key)
+    if (age >= decay) {
+      this.held.delete(key)
+      return 0
+    }
+    if (age <= FULL_INTENT_MS) return 1
+    return 1 - (age - FULL_INTENT_MS) / (decay - FULL_INTENT_MS)
+  }
+
+  private maxEnvelope(keys: string[]): number {
+    let m = 0
+    for (const k of keys) m = Math.max(m, this.envelope(k))
+    return m
+  }
+
+  // Tier 1: today's exact binary axis (real press/release, no decay/easing).
+  private binaryAxis(pos: string[], neg: string[]): -1 | 0 | 1 {
+    const p = pos.some((k) => this.isHeld(k))
+    const n = neg.some((k) => this.isHeld(k))
+    return p === n ? 0 : p ? 1 : -1
+  }
+
+  // Tier 2: continuous axis in [-1, 1] from the tap envelope, before easing.
+  private rawAxis(pos: string[], neg: string[]): number {
+    const v = this.maxEnvelope(pos) - this.maxEnvelope(neg)
+    return Math.max(-1, Math.min(1, v))
+  }
+
+  // Moves this axis's smoothed value toward `raw` by at most ATTACK_PER_TICK
+  // (magnitude increasing) or RELEASE_PER_TICK (magnitude decreasing) per call.
+  // Called once per 20Hz sim tick — steps are per-tick, not wall-clock scaled.
+  private ease(axis: Axis, raw: number): number {
+    const prev = this.smoothed[axis]
+    const step = Math.abs(raw) > Math.abs(prev) ? ATTACK_PER_TICK : RELEASE_PER_TICK
+    const next = prev + Math.max(-step, Math.min(step, raw - prev))
+    this.smoothed[axis] = next
+    return next
+  }
+
   sample(seq: number): PlayerInput {
-    const axis = (pos: string[], neg: string[]): -1 | 0 | 1 => {
-      const p = pos.some((k) => this.isHeld(k))
-      const n = neg.some((k) => this.isHeld(k))
-      return p === n ? 0 : p ? 1 : -1
+    if (this.tier1) {
+      return makeInput(seq, {
+        forward: this.binaryAxis(['w', 'up'], ['s', 'down']),
+        strafe: this.binaryAxis(['d'], ['a']),
+        turn: this.binaryAxis(['right'], ['left']),
+        fire: this.isHeld(' '),
+      })
     }
     return makeInput(seq, {
-      forward: axis(['w', 'up'], ['s', 'down']),
-      strafe: axis(['d'], ['a']),
-      turn: axis(['right'], ['left']),
+      forward: this.ease('forward', this.rawAxis(['w', 'up'], ['s', 'down'])),
+      strafe: this.ease('strafe', this.rawAxis(['d'], ['a'])),
+      turn: this.ease('turn', this.rawAxis(['right'], ['left'])),
       fire: this.isHeld(' '),
     })
   }

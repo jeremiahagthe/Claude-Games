@@ -61,4 +61,23 @@ describe('KeyParser', () => {
     expect(events).toHaveLength(20)
     expect(events.every((e) => e.key === 'a')).toBe(true)
   })
+  it('SGR mouse press/release sequences are swallowed silently', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[<0;10;20M')).toEqual([]) // button press
+    expect(p.feed('\x1b[<0;10;20m')).toEqual([]) // button release
+    expect(p.feed('\x1b[<35;42;7M')).toEqual([]) // motion report
+  })
+  it('a key immediately following a mouse sequence in the same chunk still parses', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[<0;10;20Md')).toEqual([{ key: 'd', kind: 'press' }])
+    expect(p.feed('w\x1b[<0;5;5m\x1b[A')).toEqual([
+      { key: 'w', kind: 'press' },
+      { key: 'up', kind: 'press' },
+    ])
+  })
+  it('a mouse sequence split across feed() chunks reassembles and swallows cleanly, without corrupting the next key', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[<0;123;4')).toEqual([]) // partial: wait for more bytes
+    expect(p.feed('5M' + 'd')).toEqual([{ key: 'd', kind: 'press' }])
+  })
 })

@@ -57,6 +57,51 @@ describe('stepPlayer', () => {
     expect(p.pos).toEqual({ x: 5, y: 3 })
     expect(p.lastInputSeq).toBe(7)
   })
+  it('analog forward magnitude scales speed (half input = half speed)', () => {
+    const p = player(5, 3, 0)
+    stepPlayer(p, makeInput(1, { forward: 0.5 }), ROOM)
+    const d = Math.hypot(p.pos.x - 5, p.pos.y - 3)
+    expect(d).toBeCloseTo(MOVE_SPEED * 0.5)
+  })
+  it('analog (forward 1, strafe 1) is still capped at MOVE_SPEED, not scaled above it', () => {
+    const p = player(5, 3, 0)
+    stepPlayer(p, makeInput(1, { forward: 1, strafe: 1 }), ROOM)
+    const d = Math.hypot(p.pos.x - 5, p.pos.y - 3)
+    expect(d).toBeCloseTo(MOVE_SPEED)
+  })
+  it('fractional turn scales rotation', () => {
+    const p = player(5, 3, 0)
+    stepPlayer(p, makeInput(1, { turn: 0.5 }), ROOM)
+    expect(p.dir).toBeCloseTo(TURN_SPEED * 0.5)
+  })
+})
+
+describe('makeInput analog clamping', () => {
+  it('clamps in-range values unchanged', () => {
+    const i = makeInput(1, { forward: 0.5, strafe: -0.75, turn: 1 })
+    expect(i.forward).toBe(0.5)
+    expect(i.strafe).toBe(-0.75)
+    expect(i.turn).toBe(1)
+  })
+  it('clamps out-of-range values to [-1, 1]', () => {
+    const i = makeInput(1, { forward: 5, strafe: -5, turn: 1.0001 })
+    expect(i.forward).toBe(1)
+    expect(i.strafe).toBe(-1)
+    expect(i.turn).toBe(1)
+  })
+  it('maps NaN and Infinity to 0', () => {
+    const i = makeInput(1, { forward: NaN, strafe: Infinity, turn: -Infinity })
+    expect(i.forward).toBe(0)
+    expect(i.strafe).toBe(0)
+    expect(i.turn).toBe(0)
+  })
+  it('defaults unset axes to 0 and fire to false', () => {
+    const i = makeInput(1)
+    expect(i.forward).toBe(0)
+    expect(i.strafe).toBe(0)
+    expect(i.turn).toBe(0)
+    expect(i.fire).toBe(false)
+  })
 })
 
 describe('wrapAngle', () => {

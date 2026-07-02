@@ -4,9 +4,11 @@ export type Weapon = 'blaster' | 'rail'
 
 export interface PlayerInput {
   seq: number
-  forward: -1 | 0 | 1
-  strafe: -1 | 0 | 1
-  turn: -1 | 0 | 1
+  // Continuous axes, range [-1, 1]. Milestone C's wire format must quantize
+  // these (e.g. to 1/64 steps) before transmission — not implemented yet.
+  forward: number
+  strafe: number
+  turn: number
   fire: boolean
 }
 

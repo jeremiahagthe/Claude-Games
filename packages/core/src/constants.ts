@@ -21,3 +21,17 @@ export const MAX_PLAYERS = 8
 export const INPUT_BATCH_MS = 100 // client → server packet cadence (free-tier friendly)
 export const INTERP_DELAY_MS = 120 // remote-player render delay
 export const MAX_WALL_DIST = 64
+
+// Bot difficulty tuning
+export const AIM_WANDER_TICKS = 6 // ticks between aim-wobble resamples (~300ms @ 20Hz)
+export const AIM_WOBBLE = 0.22 // radians; wander noise amplitude at skill 0
+export const REACTION_TICKS_SCALE = 12 // reactionTicks = round((1 - skill) * this)
+export const RESIGHT_GAP_TICKS = 20 // ticks without visibility before a re-sighting resets reaction delay
+
+export type Difficulty = 'easy' | 'normal' | 'hard'
+// Per-bot skill (0..1) by difficulty; index = bot slot (varied so there's always a weakest bot).
+export const DIFFICULTY_SKILLS: Record<Difficulty, readonly [number, number, number]> = {
+  easy: [0.15, 0.2, 0.25],
+  normal: [0.3, 0.35, 0.4],
+  hard: [0.5, 0.55, 0.6],
+}

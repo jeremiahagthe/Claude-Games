@@ -1,6 +1,6 @@
 import {
-  BLASTER_COOLDOWN_TICKS, BotBrain, MatchRoom, MIN_COMBATANTS, TICK_MS, handleFromSeed, MAPS,
-  randomHandle, mulberry32, wrapAngle, type MatchState, type PlayerState,
+  BLASTER_COOLDOWN_TICKS, BotBrain, DIFFICULTY_SKILLS, MatchRoom, MIN_COMBATANTS, TICK_MS, handleFromSeed, MAPS,
+  randomHandle, mulberry32, wrapAngle, type Difficulty, type MatchState, type PlayerState,
 } from '@fragwait/core'
 import { hostname } from 'node:os'
 import { detectColorMode, viewSize } from './caps.js'
@@ -38,17 +38,18 @@ function interpolateState(prev: MatchState, curr: MatchState, alpha: number): Ma
   return { ...curr, players }
 }
 
-export async function runOffline(opts: { name?: string; mute?: boolean }): Promise<void> {
+export async function runOffline(opts: { name?: string; mute?: boolean; difficulty?: Difficulty }): Promise<void> {
   const seedRng = mulberry32(Date.now() >>> 0)
   const map = MAPS[Math.floor(seedRng() * MAPS.length)]!
   const room = new MatchRoom(map, Math.floor(seedRng() * 2 ** 31))
   const selfId = 'human'
   const handle = opts.name ?? handleFromSeed(hostname())
   room.addPlayer(selfId, handle, false)
+  const skills = DIFFICULTY_SKILLS[opts.difficulty ?? 'normal']
   const bots = Array.from({ length: MIN_COMBATANTS - 1 }, (_, i) => {
     const id = `bot${i}`
     room.addPlayer(id, `${randomHandle(seedRng)}·synth`, true)
-    return new BotBrain(id, Math.floor(seedRng() * 2 ** 31))
+    return new BotBrain(id, Math.floor(seedRng() * 2 ** 31), skills[i])
   })
 
   const term = new TerminalSession(process.stdin, process.stdout)
