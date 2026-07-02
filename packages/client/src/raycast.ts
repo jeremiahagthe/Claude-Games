@@ -83,8 +83,17 @@ export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, sel
 
   const ccx = fb.w >> 1
   const ccy = fb.h >> 1
-  const crosshair: Array<[number, number]> = [[ccx, ccy], [ccx - 2, ccy], [ccx + 2, ccy], [ccx, ccy - 2], [ccx, ccy + 2]]
-  for (const [px, py] of crosshair) fb.set(px, py, 255, 255, 255)
+  // Minimal plus (3x3 footprint, down from the previous +-2 5x5 blob): a
+  // full-white center pixel with dimmer gray arms at +-1, so it reads as a
+  // fine aim point instead of a chunky mark.
+  const center: [number, number] = [ccx, ccy]
+  const arms: Array<[number, number]> = [[ccx - 1, ccy], [ccx + 1, ccy], [ccx, ccy - 1], [ccx, ccy + 1]]
+  fb.set(center[0], center[1], 255, 255, 255)
+  for (const [px, py] of arms) fb.set(px, py, 170, 170, 170)
 
-  applyMuzzleFlash(fb, flash, crosshair)
+  // Only the center point feeds the flash bloom: brightening the dimmer arms
+  // by flash*80 pushes them close enough to 255 that 256-color terminals
+  // quantize them to the same color code as pure white, erasing the plus
+  // shape at the exact moment (firing) it matters most.
+  applyMuzzleFlash(fb, flash, [center])
 }
