@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MOVE_SPEED, PLAYER_RADIUS } from '../src/constants.js'
+import { MOVE_SPEED, PLAYER_RADIUS, TURN_SPEED } from '../src/constants.js'
 import { parseMap } from '../src/map.js'
 import { makeInput, stepPlayer, wrapAngle } from '../src/movement.js'
 import type { PlayerState } from '../src/types.js'
@@ -49,6 +49,13 @@ describe('stepPlayer', () => {
     stepPlayer(p, makeInput(1, { forward: 1, strafe: 1 }), ROOM)
     const d = Math.hypot(p.pos.x - 5, p.pos.y - 3)
     expect(d).toBeCloseTo(MOVE_SPEED)
+  })
+  it('turn-only input rotates without moving and still updates lastInputSeq', () => {
+    const p = player(5, 3, 0)
+    stepPlayer(p, makeInput(7, { turn: 1 }), ROOM)
+    expect(p.dir).toBeCloseTo(TURN_SPEED)
+    expect(p.pos).toEqual({ x: 5, y: 3 })
+    expect(p.lastInputSeq).toBe(7)
   })
 })
 
