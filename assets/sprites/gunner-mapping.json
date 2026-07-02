@@ -1,0 +1,11 @@
+{
+  "cellW": 64, "cellH": 128, "cols": 16, "rows": 7,
+  "directions": {
+    "front":        { "walk": [{"r":0,"c":12}, {"r":0,"c":14}], "fire": {"r":0,"c":10} },
+    "front-left":   { "walk": [{"r":4,"c":6},  {"r":4,"c":8}],  "fire": {"r":4,"c":15} },
+    "left":         { "walk": [{"r":5,"c":4},  {"r":5,"c":6}],  "fire": {"r":5,"c":14} },
+    "back-left":    { "walk": [{"r":2,"c":8},  {"r":2,"c":9}],  "fire": {"r":2,"c":1} },
+    "back":         { "walk": [{"r":4,"c":4},  {"r":4,"c":5}],  "fire": {"r":2,"c":1} }
+  },
+  "notes": "Directions from viewer perspective; right-side facings are produced by horizontal mirror at runtime, so only left-side frames chosen. Walk pairs each show two distinct leg/stride poses for a 2-frame cycle. Fire cells are the orange/muzzle-lit variants. Compromises: (1) BACK fire reuses the back-left lit cell (2,1) because a directly-rear muzzle flash is geometrically impossible on this sheet (gun points away from camera) — 2,1 is the nearest-direction lit cell that actually reads as firing; the pure-back orange cells (e.g. 3,14) have only rim light and no muzzle. (2) back-left walk1 (2,9) is a more arched/dynamic step than walk0 (2,8) but shares the same back-left facing, giving strong leg contrast. All chosen figures are fully inside their cell bounds. Fire cells: front 0,10 (centered flash, full figure), front-left 4,15, left 5,14, back-left/back 2,1."
+}

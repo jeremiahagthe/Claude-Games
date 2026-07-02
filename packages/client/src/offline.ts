@@ -185,12 +185,21 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
     }, TICK_MS)
 
     const renderTimer = setInterval(() => {
-      const alpha = Math.min(1, Math.max(0, (performance.now() - tickAt) / TICK_MS))
+      const now = performance.now()
+      const alpha = Math.min(1, Math.max(0, (now - tickAt) / TICK_MS))
       const view = interpolateState(prev, curr, alpha)
       const me = curr.players[selfId]
       const weapon: 'blaster' | 'rail' = me?.hasRail ? 'rail' : 'blaster'
 
-      renderView(fb, room.map, view, selfId, recoil)
+      // Motion is detected across the last two SIM snapshots (where both are
+      // visible), not inside the renderer — a moving enemy alternates walk frames.
+      const moving: Record<string, boolean> = {}
+      for (const [id, c] of Object.entries(curr.players)) {
+        const p = prev.players[id]
+        moving[id] = p ? Math.hypot(c.pos.x - p.pos.x, c.pos.y - p.pos.y) > 0.01 : false
+      }
+
+      renderView(fb, room.map, view, selfId, recoil, { now, moving })
       drawGun(fb, weapon, recoil)
       recoil *= 0.8
 

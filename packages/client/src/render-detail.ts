@@ -1,5 +1,6 @@
 import { fnv1a } from '@fragwait/core'
 import type { FrameBuffer } from './framebuffer.js'
+import { FRAME_W, FRAME_H, PALETTE } from './sprites/index.js'
 
 // Background (ceiling/floor) base colors. Raycast tests reference these exact
 // values, so keep them stable — only the per-row gradient factor changes.
@@ -57,14 +58,23 @@ export interface SpriteDrawSpec {
   y0: number
   size: number
   depth: number
-  color: readonly [number, number, number]
   slim: boolean // rail pickup: thin pillar, not a humanoid
+  // Slim pillar: flat fill color. Humanoid: sampled frame + mirror + per-id tint.
+  color?: readonly [number, number, number]
+  frame?: Uint8Array
+  mirror?: boolean
+  tint?: readonly [number, number, number]
 }
 
-/** Draws a billboard sprite: a blocky humanoid silhouette, or a slim pillar for the rail pickup. */
+/**
+ * Draws a billboard sprite: a directional/animated gunner frame sampled
+ * nearest-neighbor, or a slim pillar for the rail pickup. The wall pass's
+ * per-column z-buffer gates which columns are visible.
+ */
 export function drawSprite(fb: FrameBuffer, zbuf: Float64Array, spec: SpriteDrawSpec): void {
-  const { screenX, y0, size, depth, color, slim } = spec
+  const { screenX, y0, size, depth, slim } = spec
   if (slim) {
+    const color = spec.color ?? [255, 255, 255]
     const w = Math.max(1, Math.floor(size * 0.15))
     for (let col = screenX - (w >> 1); col <= screenX + (w >> 1); col++) {
       if (col < 0 || col >= fb.w || depth >= zbuf[col]!) continue
@@ -73,25 +83,41 @@ export function drawSprite(fb: FrameBuffer, zbuf: Float64Array, spec: SpriteDraw
     return
   }
 
-  const w = Math.max(1, Math.floor(size * 0.4))
-  const left = screenX - (w >> 1)
-  const right = screenX + (w >> 1)
-  const headH = Math.max(1, Math.round(size * 0.22)) // top 22%: head
-  const torsoH = Math.max(1, Math.round(size * 0.45)) // next 45%: torso, full width
-  // remaining ~33%: legs, two columns with a gap
-  for (let col = left; col <= right; col++) {
+  const frame = spec.frame
+  if (!frame) return
+  const tint = spec.tint ?? [255, 255, 255]
+  const mirror = spec.mirror ?? false
+  // Aspect matches the source cell: width = size * (FRAME_W / FRAME_H) = size/2.
+  const width = size * (FRAME_W / FRAME_H)
+  const left = screenX - width / 2
+  const iw = Math.max(1, Math.round(width))
+  const colStart = Math.floor(left)
+  // Distance shading and per-id tint (identity in multiplayer). Precompute the
+  // combined per-channel multiplier: depth fade × subtle id tint.
+  const fade = Math.min(1, Math.max(0.45, 1 - depth * 0.03))
+  const mr = fade * (0.7 + (0.3 * tint[0]) / 255)
+  const mg = fade * (0.7 + (0.3 * tint[1]) / 255)
+  const mb = fade * (0.7 + (0.3 * tint[2]) / 255)
+  for (let col = colStart; col < colStart + iw; col++) {
     if (col < 0 || col >= fb.w || depth >= zbuf[col]!) continue
-    const frac = w > 0 ? (col - left) / w : 0.5 // 0..1 across sprite width
-    const edge = col === left || col === right
-    const shade = edge ? 0.7 : 1 // outline
+    let u = Math.floor(((col - left) / width) * FRAME_W)
+    if (u < 0) u = 0
+    else if (u >= FRAME_W) u = FRAME_W - 1
+    if (mirror) u = FRAME_W - 1 - u
     for (let y = y0; y < y0 + size; y++) {
-      const localY = y - y0
-      let visible: boolean
-      if (localY < headH) visible = frac >= 0.225 && frac <= 0.775 // 55% width, centered
-      else if (localY < headH + torsoH) visible = true
-      else visible = frac < 0.38 || frac > 0.62 // two leg columns
-      if (!visible) continue
-      fb.set(col, y, Math.floor(color[0] * shade), Math.floor(color[1] * shade), Math.floor(color[2] * shade))
+      let v = Math.floor(((y - y0) / size) * FRAME_H)
+      if (v < 0) v = 0
+      else if (v >= FRAME_H) v = FRAME_H - 1
+      const idx = frame[v * FRAME_W + u]!
+      if (idx === 0) continue // transparent: leave background/z-buffer untouched
+      const [pr, pg, pb] = PALETTE[idx]!
+      fb.set(
+        col,
+        y,
+        Math.min(255, Math.floor(pr * mr)),
+        Math.min(255, Math.floor(pg * mg)),
+        Math.min(255, Math.floor(pb * mb)),
+      )
     }
   }
 }

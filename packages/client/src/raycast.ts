@@ -1,11 +1,29 @@
 import { type GameMap, type MatchState, fnv1a, isWall, wrapAngle, MAX_WALL_DIST } from '@fragwait/core'
 import type { FrameBuffer } from './framebuffer.js'
 import { applyMuzzleFlash, backgroundColorAt, brickShade, drawSprite, wallBaseColor } from './render-detail.js'
+import { SPRITE_FRAMES, pickSpriteDirection, selectFrame } from './sprites/index.js'
 
 export const FOV = Math.PI / 3
 export { backgroundColorAt } from './render-detail.js'
 
-export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, selfId: string, flash = 0): void {
+// Per-frame render-loop inputs that the sim snapshot alone can't carry: the
+// wall-clock `now` (drives walk animation) and a per-player "moving" flag
+// (derived in offline.ts where the last two sim snapshots are both visible).
+export interface RenderExtras {
+  now: number
+  moving: Record<string, boolean>
+}
+
+export function renderView(
+  fb: FrameBuffer,
+  map: GameMap,
+  state: MatchState,
+  selfId: string,
+  flash = 0,
+  extras?: RenderExtras,
+): void {
+  const now = extras?.now ?? 0
+  const moving = extras?.moving ?? {}
   const me = state.players[selfId]
   if (!me) return
   for (let y = 0; y < fb.h; y++) {
@@ -54,14 +72,30 @@ export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, sel
   }
 
   // sprites far -> near
-  interface Sprite { x: number; y: number; color: readonly [number, number, number]; blink: boolean; slim: boolean }
+  interface Sprite {
+    x: number
+    y: number
+    blink: boolean
+    slim: boolean
+    color?: readonly [number, number, number] // slim pillar fill
+    frame?: Uint8Array // humanoid: sampled gunner frame
+    mirror?: boolean
+    tint?: readonly [number, number, number] // per-id identity tint
+  }
   const sprites: Sprite[] = []
   for (const p of Object.values(state.players)) {
     if (p.id === selfId || p.hp <= 0) continue
     const h = fnv1a(p.id)
+    const choice = pickSpriteDirection(p.dir, p.pos, me.pos)
+    const frame = selectFrame(SPRITE_FRAMES[choice.dir], {
+      fireCooldown: p.fireCooldown,
+      moving: moving[p.id] ?? false,
+      now,
+    })
     sprites.push({
       x: p.pos.x, y: p.pos.y, slim: false,
-      color: [120 + (h & 0x7f), 80 + ((h >> 8) & 0x7f), 80 + ((h >> 16) & 0x7f)],
+      frame, mirror: choice.mirror,
+      tint: [h & 0xff, (h >> 8) & 0xff, (h >> 16) & 0xff],
       blink: p.spawnProtection > 0,
     })
   }
@@ -78,7 +112,7 @@ export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, sel
     const screenX = Math.floor((fb.w / 2) * (1 + lateral / (depth * tanHalf)))
     const size = Math.min(fb.h, Math.floor(fb.h / depth))
     const y0 = (fb.h - size) >> 1
-    drawSprite(fb, zbuf, { screenX, y0, size, depth, color: s.color, slim: s.slim })
+    drawSprite(fb, zbuf, { screenX, y0, size, depth, slim: s.slim, color: s.color, frame: s.frame, mirror: s.mirror, tint: s.tint })
   }
 
   const ccx = fb.w >> 1
