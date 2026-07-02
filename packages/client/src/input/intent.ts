@@ -13,11 +13,13 @@ const MAX_DECAY_MS = 600
 const DECAY_SLOPE = 1.6
 const DECAY_INTERCEPT_MS = 40
 
-// Tier-2 tap envelope: a key's intent stays at full strength for FULL_INTENT_MS
-// after it was last seen, then tapers linearly to 0 by its decay window. This
-// turns a tap (registered for the full initial decay window with no repeat)
-// into a short, tapering impulse instead of 450ms of full-strength input, and
-// keeps a slow first OS repeat from reading as a hard stop.
+// Tier-2 tap envelope: a key's intent stays at full strength while its age is
+// within the taper start — min(FULL_INTENT_MS, decayFor(key)/2), so the taper
+// stays reachable even when the adaptive decay floor (120ms, after fast OS
+// repeats) dips below FULL_INTENT_MS — then tapers linearly to 0 by the decay
+// window. This turns a tap (registered for the full initial decay window with
+// no repeat) into a short, tapering impulse instead of 450ms of full-strength
+// input, and keeps a slow first OS repeat from reading as a hard stop.
 const FULL_INTENT_MS = 140
 
 // Per-tick (20Hz sim tick) easing applied on top of the envelope: the sampled
@@ -73,9 +75,12 @@ export class IntentTracker {
     return true
   }
 
-  // Tier-2 only: 0 if not held; 1.0 while age <= FULL_INTENT_MS; then tapers
-  // linearly to 0 by the key's (adaptive) decay window. Tier 1 has real release
-  // events, so it stays exactly binary and doesn't call this.
+  // Tier-2 only: 0 if not held; 1.0 while age <= min(FULL_INTENT_MS, decay/2);
+  // then tapers linearly to 0 by the key's (adaptive) decay window. Capping the
+  // taper start at half the decay window keeps the taper reachable when fast OS
+  // repeats have shrunk decayFor() to its 120ms floor (< FULL_INTENT_MS): full
+  // until 60ms, taper 60→120ms — instead of snapping 1→0 at the boundary.
+  // Tier 1 has real release events, so it stays exactly binary and doesn't call this.
   private envelope(key: string): number {
     const t = this.held.get(key)
     if (t === undefined) return 0
@@ -85,8 +90,9 @@ export class IntentTracker {
       this.held.delete(key)
       return 0
     }
-    if (age <= FULL_INTENT_MS) return 1
-    return 1 - (age - FULL_INTENT_MS) / (decay - FULL_INTENT_MS)
+    const taperStart = Math.min(FULL_INTENT_MS, decay / 2)
+    if (age <= taperStart) return 1
+    return 1 - (age - taperStart) / (decay - taperStart)
   }
 
   private maxEnvelope(keys: string[]): number {

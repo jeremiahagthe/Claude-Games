@@ -81,6 +81,43 @@ describe('IntentTracker tier 2 (decay + tap envelope + easing)', () => {
     expect(s3).toBe(1) // full strength reached by the 3rd sample
   })
 
+  it('fast-repeat regime: after a learned ~35ms cadence stops, the envelope itself tapers through intermediate values — no 1→0 cliff before easing', () => {
+    const clock = mkClock()
+    const tracker = new IntentTracker(clock.now)
+    tracker.onKey({ key: 'w', kind: 'press' }) // t=0
+    // learn a fast cadence: decayFor clamps to its 120ms floor (35*1.6+40 = 96 -> 120),
+    // which is BELOW FULL_INTENT_MS — the regime where the taper must still be reachable.
+    for (let i = 0; i < 6; i++) {
+      clock.advance(35)
+      tracker.onKey({ key: 'w', kind: 'repeat' })
+    }
+    // while repeats keep arriving, the envelope never dims (age < taper start at every sample)
+    tracker.sample(1)
+    tracker.sample(2)
+    expect(tracker.sample(3).forward).toBe(1)
+
+    // key released: no further events. decay = 120ms, so the taper runs 60ms -> 120ms.
+    clock.advance(70) // age 70: mid-taper. envelope = 1 - (70-60)/(120-60) = 5/6.
+    const s1 = tracker.sample(4).forward
+    // |envelope - previous| = 1/6 < the release easing cap, so the sample exposes the
+    // raw envelope value directly — a cliff (envelope pinned at 1 until 120ms) would read 1.0.
+    expect(s1).toBeCloseTo(5 / 6, 5)
+
+    clock.advance(30) // age 100: envelope = 1 - 40/60 = 1/3; easing caps the drop
+    const s2 = tracker.sample(5).forward
+    expect(s2).toBeLessThan(s1)
+    expect(s2).toBeGreaterThan(0)
+
+    clock.advance(50) // age 150 >= decay: envelope 0; eased value keeps ramping down
+    let prev = s2
+    for (let i = 6; i <= 9; i++) {
+      const s = tracker.sample(i).forward
+      expect(s).toBeLessThanOrEqual(prev)
+      prev = s
+    }
+    expect(prev).toBe(0)
+  })
+
   it('macOS hold pattern: sampled once per 20Hz tick, stays above ~0.4 during the initial-repeat gap and recovers to 1.0 (THE smoothness regression test)', () => {
     const clock = mkClock()
     const tracker = new IntentTracker(clock.now) // default initial decay: 450ms
@@ -110,8 +147,16 @@ describe('IntentTracker tier 2 (decay + tap envelope + easing)', () => {
     expect(byTick(600)).toBe(1)
 
     // after the last repeat (key released ~t=600, no more events), it ramps
-    // back down smoothly — never an instant cliff — and reaches 0
-    for (let t = 700; t < 900; t += 50) expect(byTick(t + 50)).toBeLessThan(byTick(t))
+    // back down smoothly — never an instant cliff — and reaches 0. The taper
+    // starts at min(FULL_INTENT_MS, decay/2) = 60ms past the last repeat here
+    // (learned decay = 120ms floor), so the ramp-down runs t=700..850 and the
+    // trailing samples hold at 0.
+    for (let t = 700; t < 900; t += 50) {
+      const cur = byTick(t)
+      const next = byTick(t + 50)
+      if (cur === 0) expect(next).toBe(0) // fully released: stays at rest
+      else expect(next).toBeLessThan(cur)
+    }
     expect(byTick(900)).toBe(0)
   })
 })
