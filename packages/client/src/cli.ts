@@ -18,6 +18,6 @@ const opts = parseArgs(process.argv.slice(2))
 if (opts.mode === 'doctor') {
   console.log(doctorReport(process.env, process.stdout.isTTY ?? false, process.stdout.columns ?? 0, process.stdout.rows ?? 0))
 } else {
-  // play mode is wired in Task 15 (offline) and Task 22 (online)
-  console.log('fragwait: game mode lands in a later task - try `fragwait doctor`')
+  const { main } = await import('./main.js')
+  await main(opts)
 }
