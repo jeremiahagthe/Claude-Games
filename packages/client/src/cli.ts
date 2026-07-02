@@ -1,15 +1,16 @@
 import { doctorReport } from './doctor.js'
 
-export interface CliOpts { mode: 'play' | 'doctor'; offline: boolean; name?: string; server?: string }
+export interface CliOpts { mode: 'play' | 'doctor'; offline: boolean; name?: string; server?: string; mute: boolean }
 
 export function parseArgs(argv: string[]): CliOpts {
-  const opts: CliOpts = { mode: 'play', offline: false }
+  const opts: CliOpts = { mode: 'play', offline: false, mute: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === 'doctor') opts.mode = 'doctor'
     else if (a === '--offline') opts.offline = true
     else if (a === '--name') opts.name = argv[++i]
     else if (a === '--server') opts.server = argv[++i]
+    else if (a === '--mute') opts.mute = true
   }
   return opts
 }

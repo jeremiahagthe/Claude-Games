@@ -7,17 +7,22 @@ function mkClock(start = 0): { now: () => number; advance: (ms: number) => void 
 }
 
 describe('IntentTracker tier 2 (decay)', () => {
-  it('key held while repeats arrive, decays after decayMs', () => {
+  it('key held while repeats arrive, decays after adaptive decay window', () => {
     const clock = mkClock()
+    // explicit initial decayMs=200: only governs the window before any
+    // interval has been learned for this key (see macOS-pattern test below
+    // for the adaptive behavior once repeats start flowing).
     const it2 = new IntentTracker(clock.now, 200)
     it2.onKey({ key: 'w', kind: 'press' })
     expect(it2.sample(1).forward).toBe(1)
     clock.advance(150)
-    it2.onKey({ key: 'w', kind: 'repeat' }) // OS key-repeat refresh
+    it2.onKey({ key: 'w', kind: 'repeat' }) // OS key-repeat refresh: interval learned = 150ms
     clock.advance(150)
-    expect(it2.sample(2).forward).toBe(1) // 150 < 200 since refresh
+    // decayFor now adapts: clamp(150 * 1.6 + 40, 120, 600) = 280ms; 150 < 280
+    expect(it2.sample(2).forward).toBe(1)
     clock.advance(250)
-    expect(it2.sample(3).forward).toBe(0) // decayed
+    // 150 + 250 = 400ms since the refresh, >= 280ms adaptive window: decayed
+    expect(it2.sample(3).forward).toBe(0)
   })
   it('release is ignored in tier 2 (legacy terminals never send it)', () => {
     const clock = mkClock()
@@ -25,6 +30,50 @@ describe('IntentTracker tier 2 (decay)', () => {
     it2.onKey({ key: 'd', kind: 'press' })
     it2.onKey({ key: 'd', kind: 'release' }) // some terminal quirk: ignore
     expect(it2.sample(1).strafe).toBe(1)
+  })
+  it('macOS key-repeat pattern: long initial delay then fast repeats keep the key held, and it decays soon after the last repeat', () => {
+    const clock = mkClock()
+    const tracker = new IntentTracker(clock.now) // default initial decay: 450ms
+    let cur = 0
+    const advanceTo = (target: number) => {
+      clock.advance(target - cur)
+      cur = target
+    }
+
+    tracker.onKey({ key: 'w', kind: 'press' }) // t=0
+
+    advanceTo(100)
+    expect(tracker.sample(1).forward).toBe(1)
+
+    advanceTo(250)
+    expect(tracker.sample(2).forward).toBe(1)
+
+    advanceTo(399)
+    expect(tracker.sample(3).forward).toBe(1)
+
+    advanceTo(400)
+    tracker.onKey({ key: 'w', kind: 'repeat' }) // macOS initial repeat delay ~400ms
+    expect(tracker.sample(4).forward).toBe(1)
+
+    advanceTo(450)
+    expect(tracker.sample(5).forward).toBe(1)
+
+    // fast repeat cadence kicks in: every 35ms
+    const repeats = [435, 470, 505, 540, 575]
+    for (const rt of repeats) {
+      advanceTo(rt)
+      tracker.onKey({ key: 'w', kind: 'repeat' })
+    }
+    const lastRepeat = repeats[repeats.length - 1]!
+
+    advanceTo(600)
+    expect(tracker.sample(6).forward).toBe(1)
+
+    // key physically released; no further repeat events arrive.
+    // adaptive window shrank once fast repeats started (~35ms interval -> ~120ms floor),
+    // so forward must drop to 0 well within 150ms of the last repeat.
+    advanceTo(lastRepeat + 150)
+    expect(tracker.sample(7).forward).toBe(0)
   })
 })
 

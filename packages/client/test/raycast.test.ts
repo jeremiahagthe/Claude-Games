@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parseMap } from '@fragwait/core'
 import type { MatchState, PlayerState } from '@fragwait/core'
 import { FrameBuffer } from '../src/framebuffer.js'
-import { renderView } from '../src/raycast.js'
+import { backgroundColorAt, renderView } from '../src/raycast.js'
 
 const BOX = parseMap('box', 'Box', [
   '####################',
@@ -28,7 +28,8 @@ function wallColumnHeight(fb: FrameBuffer, col: number): number {
   for (let y = 0; y < fb.h; y++) {
     const i = (y * fb.w + col) * 3
     const [r, g, b] = [fb.px[i]!, fb.px[i + 1]!, fb.px[i + 2]!]
-    if (!(r === 18 && g === 18 && b === 24) && !(r === 38 && g === 36 && b === 34)) count++
+    const [br, bg, bb] = backgroundColorAt(y, fb.h)
+    if (!(r === br && g === bg && b === bb)) count++
   }
   return count
 }

@@ -1,23 +1,21 @@
 import { type GameMap, type MatchState, fnv1a, isWall, wrapAngle, MAX_WALL_DIST } from '@fragwait/core'
 import type { FrameBuffer } from './framebuffer.js'
+import { applyMuzzleFlash, backgroundColorAt, brickShade, drawSprite, wallBaseColor } from './render-detail.js'
 
 export const FOV = Math.PI / 3
+export { backgroundColorAt } from './render-detail.js'
 
-const CEIL = [18, 18, 24] as const
-const FLOOR = [38, 36, 34] as const
-const WALL = [140, 120, 100] as const
-
-export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, selfId: string): void {
+export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, selfId: string, flash = 0): void {
   const me = state.players[selfId]
   if (!me) return
-  const half = fb.h >> 1
   for (let y = 0; y < fb.h; y++) {
-    const c = y < half ? CEIL : FLOOR
-    for (let x = 0; x < fb.w; x++) fb.set(x, y, c[0], c[1], c[2])
+    const [r, g, b] = backgroundColorAt(y, fb.h)
+    for (let x = 0; x < fb.w; x++) fb.set(x, y, r, g, b)
   }
 
   const zbuf = new Float64Array(fb.w)
   const tanHalf = Math.tan(FOV / 2)
+  const wallColor = wallBaseColor(map.id)
   for (let col = 0; col < fb.w; col++) {
     const camX = (2 * col) / fb.w - 1
     const rayDir = me.dir + Math.atan(camX * tanHalf)
@@ -42,14 +40,21 @@ export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, sel
     const wallH = Math.min(fb.h, Math.floor(fb.h / perp))
     const y0 = (fb.h - wallH) >> 1
     const fade = Math.max(0.15, 1 - perp / 16) * (side === 1 ? 0.75 : 1)
-    const r = Math.floor(WALL[0] * fade)
-    const g = Math.floor(WALL[1] * fade)
-    const b = Math.floor(WALL[2] * fade)
-    for (let y = y0; y < y0 + wallH; y++) fb.set(col, y, r, g, b)
+    // lodev-style wall-hit fractional coordinate, used as the texture u
+    const wallX = side === 0 ? me.pos.y + dist * dy : me.pos.x + dist * dx
+    const u = wallX - Math.floor(wallX)
+    for (let y = y0; y < y0 + wallH; y++) {
+      const v = (y - y0) / wallH
+      const shade = fade * brickShade(u, v, cx, cy)
+      const r = Math.min(255, Math.floor(wallColor[0] * shade))
+      const g = Math.min(255, Math.floor(wallColor[1] * shade))
+      const b = Math.min(255, Math.floor(wallColor[2] * shade))
+      fb.set(col, y, r, g, b)
+    }
   }
 
   // sprites far -> near
-  interface Sprite { x: number; y: number; color: [number, number, number]; blink: boolean; slim: boolean }
+  interface Sprite { x: number; y: number; color: readonly [number, number, number]; blink: boolean; slim: boolean }
   const sprites: Sprite[] = []
   for (const p of Object.values(state.players)) {
     if (p.id === selfId || p.hp <= 0) continue
@@ -72,17 +77,14 @@ export function renderView(fb: FrameBuffer, map: GameMap, state: MatchState, sel
     const lateral = -rx * Math.sin(me.dir) + ry * Math.cos(me.dir)
     const screenX = Math.floor((fb.w / 2) * (1 + lateral / (depth * tanHalf)))
     const size = Math.min(fb.h, Math.floor(fb.h / depth))
-    const w = Math.max(1, Math.floor(size * (s.slim ? 0.15 : 0.4)))
     const y0 = (fb.h - size) >> 1
-    for (let col = screenX - (w >> 1); col <= screenX + (w >> 1); col++) {
-      if (col < 0 || col >= fb.w || depth >= zbuf[col]!) continue
-      for (let y = y0 + (s.slim ? 0 : size >> 3); y < y0 + size; y++) fb.set(col, y, s.color[0], s.color[1], s.color[2])
-    }
+    drawSprite(fb, zbuf, { screenX, y0, size, depth, color: s.color, slim: s.slim })
   }
 
   const ccx = fb.w >> 1
   const ccy = fb.h >> 1
-  for (const [px, py] of [[ccx, ccy], [ccx - 2, ccy], [ccx + 2, ccy], [ccx, ccy - 2], [ccx, ccy + 2]] as const) {
-    fb.set(px, py, 255, 255, 255)
-  }
+  const crosshair: Array<[number, number]> = [[ccx, ccy], [ccx - 2, ccy], [ccx + 2, ccy], [ccx, ccy - 2], [ccx, ccy + 2]]
+  for (const [px, py] of crosshair) fb.set(px, py, 255, 255, 255)
+
+  applyMuzzleFlash(fb, flash, crosshair)
 }
