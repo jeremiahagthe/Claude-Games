@@ -1,0 +1,15 @@
+{
+  "name": "fragwait-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "vitest run",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vitest": "4.1.9",
+    "@types/node": "26.1.0"
+  }
+}
