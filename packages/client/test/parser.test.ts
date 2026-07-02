@@ -49,4 +49,9 @@ describe('KeyParser', () => {
     const p = new KeyParser()
     expect(p.feed('\x1b[38;2;1;2;3m')).toEqual([])
   })
+  it('unterminated CSI garbage cannot grow the buffer unboundedly', () => {
+    const p = new KeyParser()
+    p.feed('\x1b[' + '1;'.repeat(200)) // 402 chars of never-terminating CSI params
+    expect(p.feed('w')).toEqual([{ key: 'w', kind: 'press' }]) // parser recovered
+  })
 })

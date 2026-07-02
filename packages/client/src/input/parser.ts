@@ -3,12 +3,14 @@ export interface KeyEvent { key: string; kind: 'press' | 'repeat' | 'release' }
 const ARROWS: Record<string, string> = { A: 'up', B: 'down', C: 'right', D: 'left' }
 const CODES: Record<number, string> = { 32: ' ', 27: 'esc', 13: 'enter', 9: 'tab', 127: 'backspace' }
 const EVENTS: Record<string, KeyEvent['kind']> = { '1': 'press', '2': 'repeat', '3': 'release' }
+const MAX_BUF = 64
 
 export class KeyParser {
   private buf = ''
 
   feed(chunk: Buffer | string): KeyEvent[] {
     this.buf += chunk.toString('utf8')
+    if (this.buf.length > MAX_BUF) this.buf = this.buf.slice(-8) // resync: keep only a plausible partial sequence tail
     const out: KeyEvent[] = []
     while (this.buf.length > 0) {
       const ch = this.buf[0]!
