@@ -514,65 +514,212 @@ describe('mapping — axes and fire combine', () => {
   })
 })
 
-describe('mouse aim (position → turn rate) — joystick, active in BOTH tiers', () => {
-  it('null until the first move → 0 turn contribution', () => {
+// MOUSE_SENS = 0.025 rad/cell; the delta drains through the same TURN_TICK_RAD
+// (0.13) pipe as keyboard taps, so an emitted turn axis is (rad drained)/0.13.
+describe('mouse look (1:1 relative delta) — active in BOTH tiers', () => {
+  it('the first event only stores position: no phantom turn', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
+    tracker.onMouseMotion(40, 80) // mid-screen, first event → store only
     expect(tracker.sample(1).turn).toBe(0)
   })
 
-  it('dead-zone: |normX| ≤ 0.10 → exactly 0', () => {
+  it('a rightward delta of N cells adds N·0.025 rad and drains into a positive turn', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMove(0.10)
-    expect(tracker.sample(1).turn).toBe(0)
-    tracker.onMouseMove(-0.10)
-    expect(tracker.sample(2).turn).toBe(0)
-    tracker.onMouseMove(0.05)
-    expect(tracker.sample(3).turn).toBe(0)
+    tracker.onMouseMotion(40, 80) // store
+    tracker.onMouseMotion(44, 80) // dx = +4 → +0.1 rad pending
+    expect(tracker.sample(1).turn).toBeCloseTo(0.1 / 0.13, 12) // 0.1 ≤ 0.13 → one tick
+    expect(tracker.sample(2).turn).toBe(0) // fully drained
   })
 
-  it('edges: normX = ±1 → ±1 (full rate at the edge)', () => {
+  it('a leftward delta is symmetric (negative turn)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMove(1)
-    expect(tracker.sample(1).turn).toBe(1)
-    tracker.onMouseMove(-1)
-    expect(tracker.sample(2).turn).toBe(-1)
+    tracker.onMouseMotion(40, 80) // store
+    tracker.onMouseMotion(36, 80) // dx = −4 → −0.1 rad pending
+    expect(tracker.sample(1).turn).toBeCloseTo(-0.1 / 0.13, 12)
   })
 
-  it('curve spot-check: normX = 0.55 → sign · 0.5^1.5 ≈ 0.35355', () => {
+  it('per-event dx is clamped at ±8: a 40-cell teleport contributes only 8·0.025 = 0.2 rad', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMove(0.55) // t = (0.55 − 0.10)/0.90 = 0.5
-    expect(tracker.sample(1).turn).toBeCloseTo(Math.pow(0.5, 1.5), 12)
-    tracker.onMouseMove(-0.55)
-    expect(tracker.sample(2).turn).toBeCloseTo(-Math.pow(0.5, 1.5), 12)
+    tracker.onMouseMotion(20, 80) // store
+    tracker.onMouseMotion(60, 80) // dx = +40 → clamped to +8 → +0.2 rad
+    let total = 0
+    for (let i = 1; i <= 4; i++) total += tracker.sample(i).turn * 0.13
+    expect(total).toBeCloseTo(0.2, 12) // exactly the clamped delta, no teleport snap
   })
 
-  it('keyboard turn + mouse turn sum clamps to [-1, 1]', () => {
+  it('mouse saturation caps the budget at 0.35 rad; excess motion is dropped, not banked', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMove(1) // mouse alone = +1
-    tracker.onKey({ key: 'right', kind: 'press' }) // + a tap quantum (~0.46 next tick)
-    clock.set(50)
-    expect(tracker.sample(1).turn).toBe(1) // 1 + 0.46 clamped to 1, not 1.46
+    tracker.onMouseMotion(0, 80) // store
+    tracker.onMouseMotion(8, 80) // +0.2 → 0.2
+    tracker.onMouseMotion(16, 80) // +0.2 → 0.4, clamped to 0.35
+    tracker.onMouseMotion(24, 80) // +0.2 → clamped to 0.35 (mid-screen, no edge)
+    let total = 0
+    for (let i = 1; i <= 5; i++) total += tracker.sample(i).turn * 0.13
+    expect(total).toBeCloseTo(0.35, 12)
   })
 
-  it('mouse aim is identical under tier 1 (does not touch tier state)', () => {
+  it('a keyboard tap still adds BEYOND a mouse-saturated budget (mouse clamp is mouse-path only)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(0, 80)
+    tracker.onMouseMotion(8, 80) // 0.2
+    tracker.onMouseMotion(16, 80) // clamp 0.35
+    tracker.onMouseMotion(24, 80) // clamp 0.35
+    tracker.onKey({ key: 'right', kind: 'press' }) // +0.06 on top of 0.35 → 0.41
+    let total = 0
+    for (let i = 1; i <= 5; i++) total += tracker.sample(i).turn * 0.13
+    expect(total).toBeCloseTo(0.41, 12) // > 0.35: the keyboard quantum is not clamped down
+  })
+
+  it('THE fix for "live moving": a motionless pointer returns to 0 turn once the budget drains', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(40, 80) // store, mid-screen (no edge zone)
+    tracker.onMouseMotion(44, 80) // dx +4 → 0.1 pending
+    expect(tracker.sample(1).turn).toBeCloseTo(0.1 / 0.13, 12) // follows the motion
+    // no further events: the view stops instead of spinning on forever
+    for (let t = 2; t <= 20; t++) expect(tracker.sample(t).turn, `turn at sample ${t}`).toBe(0)
+  })
+
+  it('mouse look is identical under tier 1 (does not touch tier state)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     tracker.enableTier1()
-    tracker.onMouseMove(0.55)
-    expect(tracker.sample(1).turn).toBeCloseTo(Math.pow(0.5, 1.5), 12)
+    tracker.onMouseMotion(40, 80)
+    tracker.onMouseMotion(44, 80) // +0.1
+    expect(tracker.sample(1).turn).toBeCloseTo(0.1 / 0.13, 12)
   })
+})
 
-  it('resetTransient does NOT clear the mouse position (the pointer is still physically there)', () => {
+describe('mouse edge-turn zones (RTS-style) — from stored state, no events needed', () => {
+  it('a pointer parked in the left zone (x ≤ 2) turns left at 0.6 every tick', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMove(1)
+    tracker.onMouseMotion(1, 80) // left zone; first event → no delta, just position
+    for (let i = 1; i <= 5; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBe(-0.6)
+  })
+
+  it('a pointer parked in the right zone (x ≥ viewCols − 1) turns right at 0.6', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(79, 80) // 79 ≥ 80 − 1 → right zone
+    for (let i = 1; i <= 5; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBe(0.6)
+  })
+
+  it('the right zone uses viewCols from the event: x = 79 is mid-screen at viewCols 100', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(79, 100) // 79 < 99 and > 2 → not an edge
+    expect(tracker.sample(1).turn).toBe(0)
+  })
+
+  it('leaving the zone stops the edge turn (the residual budget drains, then 0)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(1, 80) // left zone
+    expect(tracker.sample(1).turn).toBe(-0.6)
+    tracker.onMouseMotion(40, 80) // dx +8 (clamped from 39) → +0.2, now mid-screen
+    expect(tracker.sample(2).turn).toBe(1) // 0.2 drains: full tick, no edge now
+    expect(tracker.sample(3).turn).toBeCloseTo(0.07 / 0.13, 12) // remainder
+    expect(tracker.sample(4).turn).toBe(0) // stopped: neither edge nor budget
+  })
+
+  it('edge state clears on resetTransient (the stored pointer is forgotten)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(1, 80) // left zone
+    expect(tracker.sample(1).turn).toBe(-0.6)
     tracker.resetTransient()
-    expect(tracker.sample(1).turn).toBe(1) // aim resumes from the current cursor
+    expect(tracker.sample(2).turn).toBe(0) // no stored x → no edge contribution
+  })
+})
+
+describe('mouse position reset — resetTransient forgets the last delta', () => {
+  it('after resetTransient the next motion event stores without a delta', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseMotion(10, 80)
+    tracker.onMouseMotion(18, 80) // +0.2 pending
+    tracker.sample(1)
+    tracker.resetTransient() // clears pending AND stored position
+    tracker.onMouseMotion(30, 80) // first event after reset → store only, no delta
+    expect(tracker.sample(2).turn).toBe(0)
+    expect(tracker.sample(3).turn).toBe(0) // no residual budget either
+  })
+})
+
+describe('hold-to-walk — right/middle mouse button, active in BOTH tiers', () => {
+  it('right press eases forward to 1 and HOLDS across arbitrary samples; release eases back to 0', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('right', 'press')
+    expect(tracker.sample(1).forward).toBe(0.55) // one attack step, not an instant jump
+    expect(tracker.sample(2).forward).toBe(1)
+    for (let i = 3; i <= 100; i++) expect(tracker.sample(i).forward, `sample ${i}`).toBe(1) // holds
+    tracker.onMouseButton('right', 'release')
+    expect(tracker.sample(101).forward).toBeCloseTo(0.7, 12) // release easing (1 − 0.3)
+  })
+
+  it('middle button is identical to right', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('middle', 'press')
+    expect(tracker.sample(1).forward).toBe(0.55)
+    expect(tracker.sample(2).forward).toBe(1)
+    tracker.onMouseButton('middle', 'release')
+    expect(tracker.sample(3).forward).toBeCloseTo(0.7, 12)
+  })
+
+  it('the left button does not walk (it is fire only)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('left', 'press')
+    expect(tracker.sample(1).forward).toBe(0) // no walk
+    expect(tracker.sample(1).fire).toBe(true) // but it does fire
+  })
+
+  it('walkHeld overrides an active backward latch while held; the latch resumes on release', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 's', kind: 'press' }) // backward latch = −1
+    tracker.sample(1)
+    tracker.sample(2)
+    expect(tracker.sample(3).forward).toBe(-1) // eased to full reverse
+    tracker.onMouseButton('right', 'press') // override target → +1
+    let f = -1
+    for (let i = 4; i < 30; i++) f = tracker.sample(i).forward
+    expect(f).toBe(1) // walks forward despite the backward latch
+    tracker.onMouseButton('right', 'release') // latch (still −1) resumes
+    for (let i = 30; i < 60; i++) f = tracker.sample(i).forward
+    expect(f).toBe(-1) // eases back to the unchanged latch
+  })
+
+  it('tier 1: the override is binary and instant (walk 1 while held, latch/axis resumes on release)', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.enableTier1()
+    tracker.onKey({ key: 's', kind: 'press' }) // held backward
+    expect(tracker.sample(1).forward).toBe(-1)
+    tracker.onMouseButton('right', 'press')
+    expect(tracker.sample(2).forward).toBe(1) // override, no easing in tier 1
+    tracker.onMouseButton('right', 'release')
+    expect(tracker.sample(3).forward).toBe(-1) // s still held → resumes
+  })
+
+  it('resetTransient clears walkHeld', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('right', 'press')
+    tracker.sample(1)
+    tracker.resetTransient()
+    expect(tracker.sample(2).forward).toBe(0) // walkHeld gone, smoothed snapped
+    clock.set(5000)
+    expect(tracker.sample(3).forward).toBe(0) // stays 0 with no events
   })
 })
 

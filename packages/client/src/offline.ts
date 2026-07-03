@@ -5,7 +5,7 @@ import {
 import { hostname } from 'node:os'
 import { detectColorMode, viewSize } from './caps.js'
 import { busyElapsedSeconds, startClaudeListener } from './claude.js'
-import { FrameBuffer, TermRenderer, rgbTo256 } from './framebuffer.js'
+import { FrameBuffer, TermRenderer } from './framebuffer.js'
 import { drawGun } from './gun.js'
 import { KillFeed, hudRows } from './hud.js'
 import { IntentTracker } from './input/intent.js'
@@ -77,18 +77,6 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   let fb = new FrameBuffer(viewCols, viewRows * 2)
   const colorMode = detectColorMode(process.env)
   const renderer = new TermRenderer(colorMode)
-  // A single foreground-colored glyph in the active color mode (mono: bare
-  // glyph). Used for the aim indicator overlay, cursor-addressed like the HUD.
-  const fgGlyph = (ch: string, r: number, g: number, b: number): string =>
-    colorMode === 'truecolor'
-      ? `${ESC}[38;2;${r};${g};${b}m${ch}${ESC}[0m`
-      : colorMode === '256'
-        ? `${ESC}[38;5;${rgbTo256(r, g, b)}m${ch}${ESC}[0m`
-        : ch
-  // Last known pointer offset from view center in [-1, 1] (null until first
-  // mouse move); the indicator column is derived from it each frame so it stays
-  // correct across resizes. Aim geometry is owned here, not in the tracker.
-  let pointerNormX: number | null = null
   const onResize = () => {
     ;({ viewCols, viewRows } = viewSize(process.stdout.columns ?? 80, process.stdout.rows ?? 24))
     fb = new FrameBuffer(viewCols, viewRows * 2)
@@ -101,13 +89,13 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   const onData = (chunk: Buffer) => {
     for (const e of parser.feed(chunk)) {
       if ('type' in e) {
-        // Mouse: every report updates aim (joystick position → turn rate);
-        // recompute geometry from the current viewCols so resize stays correct.
-        const center = (viewCols + 1) / 2
-        const halfWidth = viewCols / 2
-        pointerNormX = Math.max(-1, Math.min(1, (e.x - center) / halfWidth))
-        intent.onMouseMove(pointerNormX)
-        if (e.button === 'left') intent.onMouseButton(e.button, e.action)
+        // Mouse: every position-bearing report (motion AND press/release) feeds
+        // 1:1 delta look; viewCols rides along for the edge-turn zones. Left =
+        // fire, right/middle = hold-to-walk (onMouseButton filters the rest).
+        intent.onMouseMotion(e.x, viewCols)
+        if (e.button === 'left' || e.button === 'right' || e.button === 'middle') {
+          intent.onMouseButton(e.button, e.action)
+        }
         continue
       }
       if (e.key === 'kitty-ack') intent.enableTier1()
@@ -128,7 +116,7 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   // one dim line, no prompt.
   if (process.platform === 'darwin') {
     process.stdout.write(
-      `${ESC}[2maim: move mouse left/right of center · fire: click (or Space) · move: tap W/A/S/D (tap opposite to stop) · Q quits${ESC}[0m\n`,
+      `${ESC}[2maim: move mouse · walk: hold right mouse button (or tap W) · fire: click or Space · Q quits${ESC}[0m\n`,
     )
   }
 
@@ -204,16 +192,6 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
       recoil *= 0.8
 
       let out = renderer.frame(fb)
-      // Aim indicator on the top view row (row 1), repainted unconditionally
-      // every frame like the HUD so it survives the diff renderer: a dim gray
-      // '+' marks view center, a bright ▼ marks the pointer (pointer wins a
-      // shared cell — drawn last). Geometry recomputed from viewCols each frame.
-      const center = (viewCols + 1) / 2
-      out += `${ESC}[1;${Math.round(center)}H` + fgGlyph('+', 120, 120, 120)
-      if (pointerNormX !== null) {
-        const col = Math.max(1, Math.min(viewCols, Math.round(center + pointerNormX * (viewCols / 2))))
-        out += `${ESC}[1;${col}H` + fgGlyph('▼', 255, 220, 120)
-      }
       const { top, bottom } = hudRows(curr, selfId, viewCols, busySeconds, feed)
       out += `${ESC}[${viewRows + 1};1H${ESC}[0;7m${top}${ESC}[0m`
       out += `${ESC}[${viewRows + 2};1H${bottom[0]}${ESC}[${viewRows + 3};1H${bottom[1]}`

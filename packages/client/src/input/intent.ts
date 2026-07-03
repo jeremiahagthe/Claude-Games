@@ -8,7 +8,7 @@ const TRACKED = new Set(['w', 'a', 's', 'd', ' ', 'up', 'down', 'left', 'right']
 // - TURN keys are event-driven two-mode (tap quanta / OS-repeat-confirmed
 //   hold), unchanged. No envelope, no easing — budget conservation makes "one
 //   tap = exactly TURN_TAP_RAD of rotation" literally true in the sim. Mouse
-//   position adds a joystick turn-rate on top of this (see onMouseMove).
+//   motion deltas feed the SAME pending budget (see onMouseMotion).
 // - MOVEMENT keys are LATCHED (sticky): a tap starts continuous motion that
 //   persists with no further events, an opposing tap stops it, a second
 //   opposing tap reverses. Timing-free by design — Apple Terminal can't
@@ -45,13 +45,24 @@ const TURN_TICK_RAD = 2.6 / 20
 const ATTACK_PER_TICK = 0.55
 const RELEASE_PER_TICK = 0.3
 
-// --- Mouse aim (position → turn rate; joystick, active in BOTH tiers) --------
-// normX is the pointer's horizontal offset from view center, in [-1, 1].
-// Inside the dead-zone the contribution is 0; outside, it rises as t^1.5 (fine
-// control near center, full rate at the edge). There is no pointer lock in any
-// terminal, so this is absolute-position joystick aim, not relative mouse-look.
-const AIM_DEADZONE = 0.10
-const AIM_EXPONENT = 1.5
+// --- Mouse look (1:1 relative delta, active in BOTH tiers) ------------------
+// Pointer MOTION drives the view: each event's horizontal delta (in cells) adds
+// dx·MOUSE_SENS radians to the shared pending-turn budget, so the view follows
+// the hand and STOPS when the hand stops (no residual joystick spin). Budget
+// drains through the same TURN_TICK_RAD pipe, so TURN_SPEED still caps the rate.
+const MOUSE_SENS = 0.025 // rad/cell — the mouse-look sensitivity tunable
+// Per-event delta clamp: swallows pointer teleports (window re-entry, focus
+// jumps) that would otherwise snap the view by hundreds of cells at once.
+const MOUSE_DX_CLAMP = 8
+// Mouse-fed budget saturation: a stale look backlog is worse than a dropped
+// one, so a mouse contribution never leaves more than this banked. Keyboard tap
+// quanta are exempt (see enqueueTurnQuantum) — they are intentional units.
+const MOUSE_SATURATION_RAD = 0.35
+// Screen-edge turn zones (RTS-style): a pointer parked within EDGE_COLS of an
+// edge turns the view at a constant axis every tick, so 360° turns work without
+// pointer lock. A parked pointer emits no events, so this reads stored state.
+const EDGE_COLS = 2
+const EDGE_TURN_AXIS = 0.6
 
 // --- Fire -------------------------------------------------------------------
 // Every space event latches fire for this long. Blaster cooldown is 500ms, so
@@ -89,9 +100,11 @@ export class IntentTracker {
   private fireUntil = -Infinity
   private smoothed: Record<'forward' | 'strafe', number> = { forward: 0, strafe: 0 }
 
-  // Mouse aim/fire (shared by both tiers; geometry is owned by offline.ts,
-  // which passes an already-normalized, already-clamped normX in [-1, 1]).
-  private mouseNormX: number | null = null // null until the first move → 0 turn
+  // Mouse look/walk/fire (shared by both tiers). offline.ts owns geometry and
+  // passes raw pointer x (in cells) plus the current viewCols per event.
+  private lastMouseX: number | null = null // null until first event → no delta
+  private lastViewCols = 0 // viewCols seen on the last event (edge-zone test)
+  private walkHeld = false // right/middle mouse button held → forward override
   private mouseFireHeld = false
 
   // Tier-1 state (kitty protocol: real press/repeat/release)
@@ -117,46 +130,71 @@ export class IntentTracker {
   }
 
   // Clears everything inferred/latched (turn budgets + hold modes, movement
-  // latches, mouse-fire state, fire latch, smoothed axes). Called from
-  // enableTier1() and on self-death: a respawn must not drain stale turn budget
-  // or keep walking into the new facing. Deliberately does NOT clear the tier-1
-  // physical held map (those keys are ground truth — their releases will
-  // arrive) nor the stored mouse position (the pointer is still physically
-  // where it was, so aim resumes from the current cursor).
+  // latches, walk-hold, mouse-fire state, fire latch, smoothed axes) and the
+  // stored mouse position. Called from enableTier1() and on self-death: a
+  // respawn or tier switch must not drain stale turn budget, keep walking into
+  // the new facing, or replay a stale pointer delta. Deliberately does NOT clear
+  // the tier-1 physical held map (those keys are ground truth — their releases
+  // will arrive).
   resetTransient(): void {
     this.latch = { forward: 0, strafe: 0 }
+    this.walkHeld = false
     this.mouseFireHeld = false
     this.turns.clear()
     this.turnPending = 0
     this.fireUntil = -Infinity
     this.smoothed = { forward: 0, strafe: 0 }
+    this.resetMousePosition()
   }
 
-  // ---- Mouse aim + fire (shared by both tiers) ------------------------------
+  // ---- Mouse look + walk + fire (shared by both tiers) ----------------------
 
-  // Stores the pointer's normalized horizontal offset from view center, already
-  // clamped to [-1, 1] by the caller (offline.ts owns the geometry).
-  onMouseMove(normX: number): void {
-    this.mouseNormX = normX
+  // 1:1 relative look: every position-bearing event (motion AND press/release)
+  // feeds its horizontal delta into the shared pending-turn budget. The first
+  // event after a reset only stores position (no phantom delta); later events
+  // add dx·MOUSE_SENS, dx clamped to swallow teleports. viewCols is stashed for
+  // the edge-zone test. Saturation clamps only the mouse contribution.
+  onMouseMotion(x: number, viewCols: number): void {
+    this.lastViewCols = viewCols
+    if (this.lastMouseX === null) {
+      this.lastMouseX = x
+      return
+    }
+    const dx = Math.max(-MOUSE_DX_CLAMP, Math.min(MOUSE_DX_CLAMP, x - this.lastMouseX))
+    this.lastMouseX = x
+    const next = this.turnPending + dx * MOUSE_SENS
+    this.turnPending = Math.max(-MOUSE_SATURATION_RAD, Math.min(MOUSE_SATURATION_RAD, next))
   }
 
-  // Left button reports REAL press AND release (the only tier-2 input that
-  // does). Middle/right ignored for now; motion never toggles fire.
+  // Clears the stored pointer position so the next event stores without a
+  // delta; the edge-zone state (which reads lastMouseX) clears with it.
+  resetMousePosition(): void {
+    this.lastMouseX = null
+  }
+
+  // Left button reports REAL press AND release → fire. Right/middle → hold-to-
+  // walk (some terminals reserve right-click for a context menu, middle is the
+  // fallback). Motion actions never toggle either.
   onMouseButton(button: 'left' | 'middle' | 'right' | 'none', action: 'press' | 'release' | 'motion'): void {
-    if (button !== 'left') return
-    if (action === 'press') this.mouseFireHeld = true
-    else if (action === 'release') this.mouseFireHeld = false
+    if (button === 'left') {
+      if (action === 'press') this.mouseFireHeld = true
+      else if (action === 'release') this.mouseFireHeld = false
+      return
+    }
+    if (button === 'right' || button === 'middle') {
+      if (action === 'press') this.walkHeld = true
+      else if (action === 'release') this.walkHeld = false
+    }
   }
 
-  // Mouse joystick turn contribution in [-1, 1]: 0 inside the dead-zone, then
-  // sign · t^1.5 out to full rate at the edge. null (no move yet) → 0.
-  private mouseTurn(): number {
-    const n = this.mouseNormX
-    if (n === null) return 0
-    const a = Math.abs(n)
-    if (a <= AIM_DEADZONE) return 0
-    const t = (a - AIM_DEADZONE) / (1 - AIM_DEADZONE)
-    return Math.sign(n) * Math.pow(t, AIM_EXPONENT)
+  // Edge-zone turn contribution from stored state (a parked pointer emits no
+  // events): ±EDGE_TURN_AXIS toward whichever edge the pointer sits within, 0
+  // otherwise. Uses the viewCols from the most recent event.
+  private edgeTurn(): number {
+    if (this.lastMouseX === null) return 0
+    if (this.lastMouseX <= EDGE_COLS) return -EDGE_TURN_AXIS
+    if (this.lastMouseX >= this.lastViewCols - 1) return EDGE_TURN_AXIS
+    return 0
   }
 
   onKey(e: KeyEvent): void {
@@ -230,6 +268,15 @@ export class IntentTracker {
 
   private enqueueTurnQuantum(sign: number): void {
     const next = this.turnPending + sign * TURN_TAP_RAD
+    // Keyboard taps keep their feel-4 budget-conserving cap (±0.24): five taps
+    // bank at most four. But a tap is an intentional unit, so it is never
+    // clamped DOWN a budget the mouse has already inflated past the cap in the
+    // tap's own direction — it adds on top (the mouse saturation rule owns that
+    // ceiling, not this one).
+    if (Math.abs(this.turnPending) > TURN_PENDING_CAP_RAD && Math.sign(next) === Math.sign(this.turnPending)) {
+      this.turnPending = next
+      return
+    }
     this.turnPending = Math.max(-TURN_PENDING_CAP_RAD, Math.min(TURN_PENDING_CAP_RAD, next))
   }
 
@@ -319,21 +366,23 @@ export class IntentTracker {
 
   sample(seq: number): PlayerInput {
     const now = this.now()
-    // Mouse aim and fire are identical in both tiers (they never touch tier
-    // state). makeInput clamps the keyboard+mouse turn sum to [-1, 1].
-    const mouseTurn = this.mouseTurn()
+    // Mouse look/walk/fire are identical in both tiers (they never touch tier
+    // state). The edge-zone axis adds to the drained budget; makeInput clamps
+    // the turn sum to [-1, 1]. A held walk-button overrides the forward source
+    // (latch in tier 2, binary axis in tier 1) without modifying it.
+    const edge = this.edgeTurn()
     if (this.tier1) {
       return makeInput(seq, {
-        forward: this.t1BinaryAxis(['w', 'up'], ['s', 'down']),
+        forward: this.walkHeld ? 1 : this.t1BinaryAxis(['w', 'up'], ['s', 'down']),
         strafe: this.t1BinaryAxis(['d'], ['a']),
-        turn: this.turnAxisTier1(now) + mouseTurn,
+        turn: this.turnAxisTier1(now) + edge,
         fire: this.t1Held.has(' ') || this.mouseFireHeld,
       })
     }
     return makeInput(seq, {
-      forward: this.ease('forward', this.latch.forward),
+      forward: this.ease('forward', this.walkHeld ? 1 : this.latch.forward),
       strafe: this.ease('strafe', this.latch.strafe),
-      turn: this.turnAxisTier2(now) + mouseTurn,
+      turn: this.turnAxisTier2(now) + edge,
       fire: now < this.fireUntil || this.mouseFireHeld,
     })
   }
