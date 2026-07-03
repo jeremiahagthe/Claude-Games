@@ -77,6 +77,10 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   let fb = new FrameBuffer(viewCols, viewRows * 2)
   const colorMode = detectColorMode(process.env)
   const renderer = new TermRenderer(colorMode)
+  // Latest pointer cell (1-based terminal coords), null until the first mouse
+  // report. Fed into renderView via RenderExtras so the crosshair renders where
+  // the player is aiming; the tracker gets the same cell for aim + edge turn.
+  let pointer: { x: number; y: number } | null = null
   const onResize = () => {
     ;({ viewCols, viewRows } = viewSize(process.stdout.columns ?? 80, process.stdout.rows ?? 24))
     fb = new FrameBuffer(viewCols, viewRows * 2)
@@ -89,10 +93,12 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   const onData = (chunk: Buffer) => {
     for (const e of parser.feed(chunk)) {
       if ('type' in e) {
-        // Mouse: every position-bearing report (motion AND press/release) feeds
-        // 1:1 delta look; viewCols rides along for the edge-turn zones. Left =
-        // fire, right/middle = hold-to-walk (onMouseButton filters the rest).
-        intent.onMouseMotion(e.x, viewCols)
+        // Mouse: every position-bearing report (motion AND press/release) is
+        // the cursor aim — its cell IS the crosshair. Geometry rides along so
+        // aimNorm/edge-band stay resize-correct. Left = fire, right/middle =
+        // hold-to-walk (onMouseButton filters the rest).
+        pointer = { x: e.x, y: e.y }
+        intent.onMouseMotion(e.x, e.y, viewCols, viewRows)
         if (e.button === 'left' || e.button === 'right' || e.button === 'middle') {
           intent.onMouseButton(e.button, e.action)
         }
@@ -116,7 +122,7 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   // one dim line, no prompt.
   if (process.platform === 'darwin') {
     process.stdout.write(
-      `${ESC}[2maim: move mouse · walk: hold right mouse button (or tap W) · fire: click or Space · Q quits${ESC}[0m\n`,
+      `${ESC}[2maim: point with the mouse — shots go to the crosshair · walk: hold right mouse button (or tap W) · fire: click or Space · Q quits${ESC}[0m\n`,
     )
   }
 
@@ -187,7 +193,7 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
         moving[id] = p ? Math.hypot(c.pos.x - p.pos.x, c.pos.y - p.pos.y) > 0.01 : false
       }
 
-      renderView(fb, room.map, view, selfId, recoil, { now, moving })
+      renderView(fb, room.map, view, selfId, recoil, { now, moving, pointer })
       drawGun(fb, weapon, recoil)
       recoil *= 0.8
 

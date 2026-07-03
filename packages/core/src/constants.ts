@@ -4,6 +4,10 @@ export const MATCH_TICKS = 3 * 60 * TICK_RATE
 
 export const MOVE_SPEED = 3.2 / TICK_RATE // map cells per tick
 export const TURN_SPEED = 2.6 / TICK_RATE // radians per tick
+// Cursor-aim: max fire-direction offset from facing, in radians. The client's
+// RENDER_HALF_FOV (half the render FOV) must stay ≤ this so the aim can always
+// reach the on-screen crosshair.
+export const AIM_OFFSET_MAX = 0.6
 export const PLAYER_RADIUS = 0.3
 export const HIT_RADIUS = 0.45 // generous, replaces lag compensation (spec §4.3)
 

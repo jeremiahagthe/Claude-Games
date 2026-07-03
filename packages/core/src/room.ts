@@ -103,7 +103,7 @@ export class MatchRoom {
         const weapon = p.hasRail ? 'rail' : 'blaster'
         const dmg = p.hasRail ? RAIL_DMG : BLASTER_DMG
         if (p.hasRail) p.hasRail = false
-        const victimId = fireHitscan(id, s, this.map)
+        const victimId = fireHitscan(id, s, this.map, input.aimOffset)
         if (victimId) {
           const v = s.players[victimId]!
           if (v.spawnProtection === 0) {

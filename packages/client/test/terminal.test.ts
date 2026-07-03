@@ -46,9 +46,16 @@ describe('TerminalSession', () => {
     expect(all.indexOf('\x1b[?1000h')).toBeLessThan(all.indexOf('\x1b[?1002h'))
     expect(all.indexOf('\x1b[?1002h')).toBeLessThan(all.indexOf('\x1b[?1003h'))
     expect(all.indexOf('\x1b[?1003h')).toBeLessThan(all.indexOf('\x1b[?1006h'))
+    // OSC 22 crosshair pointer shape is requested AFTER the mouse ladder
+    expect(all).toContain('\x1b]22;crosshair\x1b\\')
+    expect(all.indexOf('\x1b[?1006h')).toBeLessThan(all.indexOf('\x1b]22;crosshair'))
     written.length = 0
     t.restore()
     const rest = written.join('')
+    // OSC 22 default pointer shape is restored FIRST (mirror of enter), before
+    // the mouse ladder is popped
+    expect(rest).toContain('\x1b]22;default\x1b\\')
+    expect(rest.indexOf('\x1b]22;default')).toBeLessThan(rest.indexOf('\x1b[?1006l'))
     // exact mirror (reverse) order: SGR disabled first, then 1003 → 1002 → 1000
     for (const mode of ['?1006l', '?1003l', '?1002l', '?1000l']) expect(rest).toContain(`\x1b[${mode}`)
     expect(rest.indexOf('\x1b[?1006l')).toBeLessThan(rest.indexOf('\x1b[?1003l'))

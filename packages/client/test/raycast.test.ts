@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { parseMap } from '@fragwait/core'
+import { AIM_OFFSET_MAX, parseMap } from '@fragwait/core'
 import type { MatchState, PlayerState } from '@fragwait/core'
 import { FrameBuffer } from '../src/framebuffer.js'
-import { backgroundColorAt, renderView } from '../src/raycast.js'
+import { RENDER_HALF_FOV, backgroundColorAt, renderView } from '../src/raycast.js'
 
 const BOX = parseMap('box', 'Box', [
   '####################',
@@ -57,34 +57,67 @@ function pixelAt(fb: FrameBuffer, x: number, y: number): [number, number, number
   return [fb.px[i]!, fb.px[i + 1]!, fb.px[i + 2]!]
 }
 
+// Framebuffer position of the crosshair for a 1-based pointer cell (feel-7):
+// fbx = clamp(x−1, 1, w−2), fby = clamp((y−1)·2+1, 1, h−2) — cells are two
+// framebuffer rows tall, and the clamp keeps the 3×3 plus inside the view.
+function crosshairFb(fb: FrameBuffer, x: number, y: number): [number, number] {
+  return [
+    Math.max(1, Math.min(fb.w - 2, x - 1)),
+    Math.max(1, Math.min(fb.h - 2, (y - 1) * 2 + 1)),
+  ]
+}
+
+function expectCrosshairAt(fb: FrameBuffer, cx: number, cy: number): void {
+  expect(pixelAt(fb, cx, cy)).toEqual([255, 255, 255])
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+    expect(pixelAt(fb, cx + dx, cy + dy)).toEqual([170, 170, 170])
+  }
+}
+
 describe('crosshair', () => {
-  it('renders a minimal plus: white center, dim gray arms at +-1, nothing at +-2', () => {
+  it('renders a minimal plus (white center, gray arms) at framebuffer center when there is no pointer', () => {
     const fb = new FrameBuffer(80, 48)
     renderView(fb, BOX, mkState(player('me', 10, 3, 0)), 'me')
     const ccx = fb.w >> 1
     const ccy = fb.h >> 1
-    expect(pixelAt(fb, ccx, ccy)).toEqual([255, 255, 255])
-    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
-      expect(pixelAt(fb, ccx + dx, ccy + dy)).toEqual([170, 170, 170])
-    }
-    // the old +-2 arms are gone (shrunk from a 5x5 to a 3x3 footprint) —
-    // nothing at +-2 was touched by the crosshair, so it's not pure white
+    expectCrosshairAt(fb, ccx, ccy)
+    // the +-2 arms are gone (3x3 footprint): nothing at +-2 is pure white
     for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]] as const) {
       expect(pixelAt(fb, ccx + dx, ccy + dy)).not.toEqual([255, 255, 255])
     }
   })
 
-  it('muzzle flash brightens the center but leaves the dim arms untouched (not washed to white)', () => {
+  it('draws the crosshair at the pointer cell (cursor aim), not at center', () => {
     const fb = new FrameBuffer(80, 48)
-    renderView(fb, BOX, mkState(player('me', 10, 3, 0)), 'me', 1) // flash=1, the peak value right after firing
-    const ccx = fb.w >> 1
-    const ccy = fb.h >> 1
-    expect(pixelAt(fb, ccx, ccy)).toEqual([255, 255, 255]) // center: already at 255, clamped
-    // arms: only the center point is passed to applyMuzzleFlash, so the dim
-    // arms stay at 170 rather than brightening to 170+flash*80=250 — which
-    // would sit above the 256-color quantization boundary (r > 248) and
-    // collapse to the same terminal color code as pure white, erasing the
-    // plus shape at exactly the moment (firing) it matters most.
-    expect(pixelAt(fb, ccx - 1, ccy)).toEqual([170, 170, 170])
+    const [x, y] = [20, 5]
+    renderView(fb, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x, y } })
+    const [cx, cy] = crosshairFb(fb, x, y)
+    expect([cx, cy]).toEqual([19, 9]) // x−1, (y−1)·2+1
+    expectCrosshairAt(fb, cx, cy)
+    // the framebuffer center is no longer the crosshair
+    expect(pixelAt(fb, fb.w >> 1, fb.h >> 1)).not.toEqual([255, 255, 255])
+  })
+
+  it('clamps the crosshair inside the view when the pointer is over the HUD / off-view', () => {
+    const far = new FrameBuffer(80, 48)
+    renderView(far, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x: 1000, y: 1000 } })
+    expectCrosshairAt(far, far.w - 2, far.h - 2) // clamped to the far corner, plus still inside
+
+    const near = new FrameBuffer(80, 48)
+    renderView(near, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x: -100, y: -100 } })
+    expectCrosshairAt(near, 1, 1) // clamped to the near corner
+  })
+
+  it('muzzle flash blooms at the MOVED crosshair, leaving the dim arms untouched', () => {
+    const fb = new FrameBuffer(80, 48)
+    const [x, y] = [30, 6]
+    renderView(fb, BOX, mkState(player('me', 10, 3, 0)), 'me', 1, { now: 0, moving: {}, pointer: { x, y } })
+    const [cx, cy] = crosshairFb(fb, x, y)
+    expect(pixelAt(fb, cx, cy)).toEqual([255, 255, 255]) // center: at 255, clamped
+    expect(pixelAt(fb, cx - 1, cy)).toEqual([170, 170, 170]) // arm not washed to white
+  })
+
+  it('RENDER_HALF_FOV stays within core AIM_OFFSET_MAX so the aim can always reach the crosshair', () => {
+    expect(RENDER_HALF_FOV).toBeLessThanOrEqual(AIM_OFFSET_MAX)
   })
 })

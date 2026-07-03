@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PlayerInput } from '@fragwait/core'
 import { IntentTracker } from '../src/input/intent.js'
+import { RENDER_HALF_FOV } from '../src/raycast.js'
 import type { KeyEvent } from '../src/input/parser.js'
 
 // Factory macOS timings (F1): first repeat 500ms after press, then every 83ms.
@@ -510,146 +511,147 @@ describe('mapping — axes and fire combine', () => {
     expect(s1.fire).toBe(true)
     tracker.sample(2)
     const s3 = tracker.sample(3)
-    expect(s3).toEqual({ seq: 3, forward: 1, strafe: -1, turn: 0, fire: true })
+    expect(s3).toEqual({ seq: 3, forward: 1, strafe: -1, turn: 0, fire: true, aimOffset: 0 })
   })
 })
 
-// MOUSE_SENS = 0.025 rad/cell; the delta drains through the same TURN_TICK_RAD
-// (0.13) pipe as keyboard taps, so an emitted turn axis is (rad drained)/0.13.
-describe('mouse look (1:1 relative delta) — active in BOTH tiers', () => {
-  it('the first event only stores position: no phantom turn', () => {
+// Cursor aim (feel-7): the pointer's normalized x offset from center,
+// aimNorm = clamp((x − center)/halfWidth, −1, 1) with center = (viewCols+1)/2
+// and halfWidth = viewCols/2, maps to aimOffset = aimNorm·RENDER_HALF_FOV. The
+// view only turns when |aimNorm| pushes past BAND_START = 0.7, linearly 0→1
+// across the outer 30%. onMouseMotion(x, y, viewCols, viewRows) — y/viewRows are
+// stored for the crosshair but never touch the sim.
+const VCOLS = 80
+const VROWS = 24
+const AIM_CENTER = (VCOLS + 1) / 2 // 40.5
+const AIM_HALF = VCOLS / 2 // 40
+// The pointer x (may be fractional in a unit test) that yields a given aimNorm.
+const xForAimNorm = (n: number): number => AIM_CENTER + n * AIM_HALF
+const bandTurn = (n: number): number => (Math.abs(n) - 0.7) / 0.3
+
+describe('cursor aim — the pointer position IS the aim (both tiers)', () => {
+  it('no pointer seen yet → aimOffset 0 and no mouse turn', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(40, 80) // mid-screen, first event → store only
-    expect(tracker.sample(1).turn).toBe(0)
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBe(0)
+    expect(s.turn).toBe(0)
   })
 
-  it('a rightward delta of N cells adds N·0.025 rad and drains into a positive turn', () => {
+  it('a centered pointer → 0 aim, 0 turn', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(40, 80) // store
-    tracker.onMouseMotion(44, 80) // dx = +4 → +0.1 rad pending
-    expect(tracker.sample(1).turn).toBeCloseTo(0.1 / 0.13, 12) // 0.1 ≤ 0.13 → one tick
-    expect(tracker.sample(2).turn).toBe(0) // fully drained
+    tracker.onMouseMotion(AIM_CENTER, 12, VCOLS, VROWS)
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBeCloseTo(0, 12)
+    expect(s.turn).toBe(0)
   })
 
-  it('a leftward delta is symmetric (negative turn)', () => {
+  it('aimNorm 0.5 → aimOffset = 0.5·RENDER_HALF_FOV, and zero turn (inside the band)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(40, 80) // store
-    tracker.onMouseMotion(36, 80) // dx = −4 → −0.1 rad pending
-    expect(tracker.sample(1).turn).toBeCloseTo(-0.1 / 0.13, 12)
+    tracker.onMouseMotion(xForAimNorm(0.5), 12, VCOLS, VROWS)
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBeCloseTo(0.5 * RENDER_HALF_FOV, 12)
+    expect(s.turn).toBe(0)
   })
 
-  it('per-event dx is clamped at ±8: a 40-cell teleport contributes only 8·0.025 = 0.2 rad', () => {
+  it('aimNorm 0.85 → turn = (0.85−0.7)/0.3 = 0.5 with aimOffset = 0.85·RENDER_HALF_FOV', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(20, 80) // store
-    tracker.onMouseMotion(60, 80) // dx = +40 → clamped to +8 → +0.2 rad
-    let total = 0
-    for (let i = 1; i <= 4; i++) total += tracker.sample(i).turn * 0.13
-    expect(total).toBeCloseTo(0.2, 12) // exactly the clamped delta, no teleport snap
+    tracker.onMouseMotion(xForAimNorm(0.85), 12, VCOLS, VROWS)
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBeCloseTo(0.85 * RENDER_HALF_FOV, 12)
+    expect(s.turn).toBeCloseTo(0.5, 12)
   })
 
-  it('mouse saturation caps the budget at 0.35 rad; excess motion is dropped, not banked', () => {
+  it('a left-of-center pointer mirrors: negative aim and negative turn', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(0, 80) // store
-    tracker.onMouseMotion(8, 80) // +0.2 → 0.2
-    tracker.onMouseMotion(16, 80) // +0.2 → 0.4, clamped to 0.35
-    tracker.onMouseMotion(24, 80) // +0.2 → clamped to 0.35 (mid-screen, no edge)
-    let total = 0
-    for (let i = 1; i <= 5; i++) total += tracker.sample(i).turn * 0.13
-    expect(total).toBeCloseTo(0.35, 12)
+    tracker.onMouseMotion(xForAimNorm(-0.85), 12, VCOLS, VROWS)
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBeCloseTo(-0.85 * RENDER_HALF_FOV, 12)
+    expect(s.turn).toBeCloseTo(-0.5, 12)
   })
 
-  it('a keyboard tap still adds BEYOND a mouse-saturated budget (mouse clamp is mouse-path only)', () => {
+  it('aimNorm clamps at the far edge: aimOffset = RENDER_HALF_FOV, turn = 1', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(0, 80)
-    tracker.onMouseMotion(8, 80) // 0.2
-    tracker.onMouseMotion(16, 80) // clamp 0.35
-    tracker.onMouseMotion(24, 80) // clamp 0.35
-    tracker.onKey({ key: 'right', kind: 'press' }) // +0.06 on top of 0.35 → 0.41
-    let total = 0
-    for (let i = 1; i <= 5; i++) total += tracker.sample(i).turn * 0.13
-    expect(total).toBeCloseTo(0.41, 12) // > 0.35: the keyboard quantum is not clamped down
+    tracker.onMouseMotion(xForAimNorm(1.5), 12, VCOLS, VROWS) // past the edge → clamp 1
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBeCloseTo(RENDER_HALF_FOV, 12)
+    expect(s.turn).toBeCloseTo(1, 12)
   })
 
-  it('THE fix for "live moving": a motionless pointer returns to 0 turn once the budget drains', () => {
+  it('geometry follows viewCols: the same x is a different aimNorm at a wider view', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(40, 80) // store, mid-screen (no edge zone)
-    tracker.onMouseMotion(44, 80) // dx +4 → 0.1 pending
-    expect(tracker.sample(1).turn).toBeCloseTo(0.1 / 0.13, 12) // follows the motion
-    // no further events: the view stops instead of spinning on forever
-    for (let t = 2; t <= 20; t++) expect(tracker.sample(t).turn, `turn at sample ${t}`).toBe(0)
+    // x = 74.5 is aimNorm 0.85 at viewCols 80, but well inside the band at 160
+    tracker.onMouseMotion(74.5, 12, 160, VROWS) // center 80.5, half 80 → aimNorm ≈ −0.075
+    const s = tracker.sample(1)
+    expect(s.turn).toBe(0) // inside the band at the wider view
+    expect(s.aimOffset).toBeCloseTo(((74.5 - 80.5) / 80) * RENDER_HALF_FOV, 12)
   })
 
-  it('mouse look is identical under tier 1 (does not touch tier state)', () => {
+  it('cursor aim is identical under tier 1 (never touches tier state)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     tracker.enableTier1()
-    tracker.onMouseMotion(40, 80)
-    tracker.onMouseMotion(44, 80) // +0.1
-    expect(tracker.sample(1).turn).toBeCloseTo(0.1 / 0.13, 12)
+    tracker.onMouseMotion(xForAimNorm(0.85), 12, VCOLS, VROWS)
+    const s = tracker.sample(1)
+    expect(s.aimOffset).toBeCloseTo(0.85 * RENDER_HALF_FOV, 12)
+    expect(s.turn).toBeCloseTo(0.5, 12)
   })
 })
 
-describe('mouse edge-turn zones (RTS-style) — from stored state, no events needed', () => {
-  it('a pointer parked in the left zone (x ≤ 2) turns left at 0.6 every tick', () => {
+describe('cursor aim — edge-band view turn from stored state (no events needed)', () => {
+  it('a parked cursor at the edge keeps turning every tick (no pointer lock needed)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(1, 80) // left zone; first event → no delta, just position
-    for (let i = 1; i <= 5; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBe(-0.6)
+    tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // aimNorm 1
+    for (let i = 1; i <= 10; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBeCloseTo(1, 12)
   })
 
-  it('a pointer parked in the right zone (x ≥ viewCols − 1) turns right at 0.6', () => {
+  it('pulling the cursor back inside the band stops the turn immediately (no residual budget)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(79, 80) // 79 ≥ 80 − 1 → right zone
-    for (let i = 1; i <= 5; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBe(0.6)
+    tracker.onMouseMotion(xForAimNorm(0.9), 12, VCOLS, VROWS)
+    expect(tracker.sample(1).turn).toBeCloseTo(bandTurn(0.9), 12) // (0.9−0.7)/0.3
+    tracker.onMouseMotion(AIM_CENTER, 12, VCOLS, VROWS) // back to center
+    expect(tracker.sample(2).turn).toBe(0) // instant: turn is stateless per tick
   })
 
-  it('the right zone uses viewCols from the event: x = 79 is mid-screen at viewCols 100', () => {
+  it('just inside the band boundary is exactly 0; just outside is > 0', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(79, 100) // 79 < 99 and > 2 → not an edge
+    tracker.onMouseMotion(xForAimNorm(0.7), 12, VCOLS, VROWS) // exactly BAND_START
     expect(tracker.sample(1).turn).toBe(0)
+    tracker.onMouseMotion(xForAimNorm(0.75), 12, VCOLS, VROWS)
+    expect(tracker.sample(2).turn).toBeCloseTo(bandTurn(0.75), 12)
   })
 
-  it('leaving the zone stops the edge turn (the residual budget drains, then 0)', () => {
+  it('the edge-band mouse turn ADDS to a keyboard tap (feel-4 keyboard budget unchanged)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(1, 80) // left zone
-    expect(tracker.sample(1).turn).toBe(-0.6)
-    tracker.onMouseMotion(40, 80) // dx +8 (clamped from 39) → +0.2, now mid-screen
-    expect(tracker.sample(2).turn).toBe(1) // 0.2 drains: full tick, no edge now
-    expect(tracker.sample(3).turn).toBeCloseTo(0.07 / 0.13, 12) // remainder
-    expect(tracker.sample(4).turn).toBe(0) // stopped: neither edge nor budget
-  })
-
-  it('edge state clears on resetTransient (the stored pointer is forgotten)', () => {
-    const clock = mkClock()
-    const tracker = mkTracker(clock)
-    tracker.onMouseMotion(1, 80) // left zone
-    expect(tracker.sample(1).turn).toBe(-0.6)
-    tracker.resetTransient()
-    expect(tracker.sample(2).turn).toBe(0) // no stored x → no edge contribution
+    tracker.onMouseMotion(xForAimNorm(0.85), 12, VCOLS, VROWS) // mouse turn 0.5
+    tracker.onKey({ key: 'right', kind: 'press' }) // one keyboard quantum on top
+    // first tick: 0.5 (mouse) + TAP_DRAIN (keyboard), clamped to [-1, 1]
+    expect(tracker.sample(1).turn).toBeCloseTo(0.5 + TAP_DRAIN, 12)
+    // the keyboard quantum drains in one tick; the mouse turn persists from state
+    expect(tracker.sample(2).turn).toBeCloseTo(0.5, 12)
   })
 })
 
-describe('mouse position reset — resetTransient forgets the last delta', () => {
-  it('after resetTransient the next motion event stores without a delta', () => {
+describe('cursor aim — the pointer survives resetTransient (physical position)', () => {
+  it('a respawn does NOT forget the cursor: aim and edge turn resume from it', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(10, 80)
-    tracker.onMouseMotion(18, 80) // +0.2 pending
-    tracker.sample(1)
-    tracker.resetTransient() // clears pending AND stored position
-    tracker.onMouseMotion(30, 80) // first event after reset → store only, no delta
-    expect(tracker.sample(2).turn).toBe(0)
-    expect(tracker.sample(3).turn).toBe(0) // no residual budget either
+    tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // parked at the edge
+    expect(tracker.sample(1).turn).toBeCloseTo(1, 12)
+    tracker.resetTransient() // self-death
+    const s = tracker.sample(2)
+    expect(s.turn).toBeCloseTo(1, 12) // still turning: pointer not cleared
+    expect(s.aimOffset).toBeCloseTo(RENDER_HALF_FOV, 12) // still aiming at the edge
   })
 })
 

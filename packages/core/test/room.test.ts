@@ -40,6 +40,32 @@ describe('MatchRoom', () => {
     expect(room.state.players['b']!.hp).toBe(MAX_HP) // instant respawn
   })
 
+  it('cursor aim: aimOffset from the input steers the shot without rotating or moving the shooter', () => {
+    const room = new MatchRoom(MAP, 1)
+    const a = room.addPlayer('a', 'alpha', false)
+    const b = room.addPlayer('b', 'beta', false)
+    a.pos = { x: 6.5, y: 2.5 }; a.dir = 0; a.spawnProtection = 0
+    b.pos = { x: 12.5, y: 2.5 }; b.dir = Math.PI; b.spawnProtection = 0
+    // b is dead head-on; a large aimOffset steers the ray off it → no hit, and
+    // the shooter's facing/position are untouched (aimOffset is fire-only).
+    room.queueInput('a', [makeInput(1, { fire: true, aimOffset: 0.3 })])
+    room.tick()
+    expect(a.dir).toBe(0)
+    expect(a.pos).toEqual({ x: 6.5, y: 2.5 })
+    expect(room.state.players['b']!.hp).toBe(MAX_HP) // steered off → miss
+  })
+
+  it('cursor aim: aimOffset 0 still hits the head-on target (the plumbing baseline)', () => {
+    const room = new MatchRoom(MAP, 1)
+    const a = room.addPlayer('a', 'alpha', false)
+    const b = room.addPlayer('b', 'beta', false)
+    a.pos = { x: 6.5, y: 2.5 }; a.dir = 0; a.spawnProtection = 0
+    b.pos = { x: 12.5, y: 2.5 }; b.dir = Math.PI; b.spawnProtection = 0
+    room.queueInput('a', [makeInput(1, { fire: true, aimOffset: 0 })])
+    room.tick()
+    expect(room.state.players['b']!.hp).toBeLessThan(MAX_HP) // straight-ahead hit
+  })
+
   it('spawn protection blocks damage; firing cancels own protection', () => {
     const room = new MatchRoom(MAP, 1)
     const a = room.addPlayer('a', 'alpha', false)

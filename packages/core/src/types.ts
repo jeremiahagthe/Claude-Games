@@ -10,6 +10,12 @@ export interface PlayerInput {
   strafe: number
   turn: number
   fire: boolean
+  // Cursor-aim fire direction offset from the player's facing `dir`, in radians;
+  // positive is the same rotational direction as positive `turn`. Clamped to
+  // ±AIM_OFFSET_MAX by makeInput. Only affects the fire ray for the tick it is
+  // fired (facing, movement, and turn are untouched). Milestone C's wire format
+  // must quantize this like the axes.
+  aimOffset: number
 }
 
 export interface PlayerState {

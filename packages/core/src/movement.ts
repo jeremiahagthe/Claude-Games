@@ -1,4 +1,4 @@
-import { MOVE_SPEED, PLAYER_RADIUS, TURN_SPEED } from './constants.js'
+import { AIM_OFFSET_MAX, MOVE_SPEED, PLAYER_RADIUS, TURN_SPEED } from './constants.js'
 import { type GameMap, isWall } from './map.js'
 import type { PlayerInput, PlayerState } from './types.js'
 
@@ -16,6 +16,14 @@ function clampAxis(v: number | undefined): number {
   return Math.max(-1, Math.min(1, v))
 }
 
+// Clamps the cursor-aim offset to ±AIM_OFFSET_MAX; absent/non-finite → 0. Kept
+// separate from clampAxis because its range is ±AIM_OFFSET_MAX, not ±1.
+function clampAimOffset(v: number | undefined): number {
+  if (v === undefined) return 0
+  if (!Number.isFinite(v)) return 0
+  return Math.max(-AIM_OFFSET_MAX, Math.min(AIM_OFFSET_MAX, v))
+}
+
 export function makeInput(seq: number, partial: Partial<Omit<PlayerInput, 'seq'>> = {}): PlayerInput {
   return {
     seq,
@@ -23,6 +31,7 @@ export function makeInput(seq: number, partial: Partial<Omit<PlayerInput, 'seq'>
     strafe: clampAxis(partial.strafe),
     turn: clampAxis(partial.turn),
     fire: partial.fire ?? false,
+    aimOffset: clampAimOffset(partial.aimOffset),
   }
 }
 

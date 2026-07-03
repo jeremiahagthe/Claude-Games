@@ -33,12 +33,16 @@ export function castWall(map: GameMap, ox: number, oy: number, dir: number): { d
   return { dist: MAX_WALL_DIST, side }
 }
 
-export function fireHitscan(shooterId: string, state: MatchState, map: GameMap): string | null {
+// The shot ray leaves along the shooter's facing plus `aimOffset` (cursor aim);
+// aimOffset defaults to 0, so straight-ahead callers are unaffected. Only the
+// ray direction changes — the shooter's facing/movement are untouched.
+export function fireHitscan(shooterId: string, state: MatchState, map: GameMap, aimOffset = 0): string | null {
   const shooter = state.players[shooterId]
   if (!shooter) return null
-  const ux = Math.cos(shooter.dir)
-  const uy = Math.sin(shooter.dir)
-  const wallDist = castWall(map, shooter.pos.x, shooter.pos.y, shooter.dir).dist
+  const dir = shooter.dir + aimOffset
+  const ux = Math.cos(dir)
+  const uy = Math.sin(dir)
+  const wallDist = castWall(map, shooter.pos.x, shooter.pos.y, dir).dist
   let best: { id: string; t: number } | null = null
   for (const p of Object.values(state.players)) {
     if (p.id === shooterId || p.hp <= 0) continue

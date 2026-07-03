@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MOVE_SPEED, PLAYER_RADIUS, TURN_SPEED } from '../src/constants.js'
+import { AIM_OFFSET_MAX, MOVE_SPEED, PLAYER_RADIUS, TURN_SPEED } from '../src/constants.js'
 import { parseMap } from '../src/map.js'
 import { makeInput, stepPlayer, wrapAngle } from '../src/movement.js'
 import type { PlayerState } from '../src/types.js'
@@ -101,6 +101,26 @@ describe('makeInput analog clamping', () => {
     expect(i.strafe).toBe(0)
     expect(i.turn).toBe(0)
     expect(i.fire).toBe(false)
+  })
+})
+
+describe('makeInput aimOffset (cursor aim)', () => {
+  it('defaults to 0 when absent (bots and existing call sites are unaffected)', () => {
+    expect(makeInput(1).aimOffset).toBe(0)
+    expect(makeInput(1, { forward: 1 }).aimOffset).toBe(0)
+  })
+  it('passes an in-range offset through unchanged', () => {
+    expect(makeInput(1, { aimOffset: 0.3 }).aimOffset).toBeCloseTo(0.3, 12)
+    expect(makeInput(1, { aimOffset: -0.3 }).aimOffset).toBeCloseTo(-0.3, 12)
+  })
+  it('clamps to ±AIM_OFFSET_MAX (0.6)', () => {
+    expect(makeInput(1, { aimOffset: 5 }).aimOffset).toBe(AIM_OFFSET_MAX)
+    expect(makeInput(1, { aimOffset: -5 }).aimOffset).toBe(-AIM_OFFSET_MAX)
+  })
+  it('maps non-finite offsets to 0', () => {
+    expect(makeInput(1, { aimOffset: NaN }).aimOffset).toBe(0)
+    expect(makeInput(1, { aimOffset: Infinity }).aimOffset).toBe(0)
+    expect(makeInput(1, { aimOffset: -Infinity }).aimOffset).toBe(0)
   })
 })
 

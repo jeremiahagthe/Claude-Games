@@ -4,14 +4,23 @@ import { applyMuzzleFlash, backgroundColorAt, brickShade, drawSprite, wallBaseCo
 import { SPRITE_FRAMES, pickSpriteDirection, selectFrame } from './sprites/index.js'
 
 export const FOV = Math.PI / 3
+// Half the render FOV — the single owner of this value for the whole client.
+// intent.ts imports it to map the pointer's normalized x to a fire-direction
+// offset, so the crosshair the player points at and the shot agree. Must stay
+// ≤ core's AIM_OFFSET_MAX (0.6) or the aim could exceed what makeInput clamps;
+// FOV/2 = π/6 ≈ 0.524 ≤ 0.6. (See raycast.test.ts for the pinning test.)
+export const RENDER_HALF_FOV = FOV / 2
 export { backgroundColorAt } from './render-detail.js'
 
 // Per-frame render-loop inputs that the sim snapshot alone can't carry: the
-// wall-clock `now` (drives walk animation) and a per-player "moving" flag
-// (derived in offline.ts where the last two sim snapshots are both visible).
+// wall-clock `now` (drives walk animation), a per-player "moving" flag (derived
+// in offline.ts where the last two sim snapshots are both visible), and the
+// latest pointer cell (1-based terminal coords) so the crosshair renders where
+// the player is aiming. `pointer` is null until the first mouse report.
 export interface RenderExtras {
   now: number
   moving: Record<string, boolean>
+  pointer?: { x: number; y: number } | null
 }
 
 export function renderView(
@@ -115,8 +124,14 @@ export function renderView(
     drawSprite(fb, zbuf, { screenX, y0, size, depth, slim: s.slim, color: s.color, frame: s.frame, mirror: s.mirror, tint: s.tint })
   }
 
-  const ccx = fb.w >> 1
-  const ccy = fb.h >> 1
+  // Crosshair follows the pointer (cursor aim): the pointer's 1-based terminal
+  // cell maps to a framebuffer pixel — x-1 to 0-base the column, and (y-1)*2+1
+  // to hit the vertical middle of the cell (each cell is two framebuffer rows).
+  // Clamped to keep the 3x3 plus inside the view even when the pointer sits over
+  // the HUD rows or off-view. No pointer yet → framebuffer center, as before.
+  const pointer = extras?.pointer ?? null
+  const ccx = pointer ? Math.max(1, Math.min(fb.w - 2, pointer.x - 1)) : fb.w >> 1
+  const ccy = pointer ? Math.max(1, Math.min(fb.h - 2, (pointer.y - 1) * 2 + 1)) : fb.h >> 1
   // Minimal plus (3x3 footprint, down from the previous +-2 5x5 blob): a
   // full-white center pixel with dimmer gray arms at +-1, so it reads as a
   // fine aim point instead of a chunky mark.

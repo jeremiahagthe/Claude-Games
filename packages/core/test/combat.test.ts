@@ -58,3 +58,41 @@ describe('fireHitscan', () => {
     expect(fireHitscan('a', s, HALL)).toBeNull()
   })
 })
+
+// Open box so the aimed ray reaches an off-axis target with no wall in the way.
+const OPEN = parseMap('open', 'Open', [
+  '################',
+  '#SSSSSSSS......#',
+  '#..............#',
+  '#..............#',
+  '#..............#',
+  '#............R.#',
+  '################',
+].join('\n'))
+
+describe('fireHitscan cursor aim (aimOffset)', () => {
+  // Shooter faces dir 0 (+x); target sits 0.3 rad off that axis, in range:
+  // y = 2.5 + 5·tan(0.3), 5 cells ahead. Head-on the perpendicular miss is
+  // ~1.5 cells (≫ HIT_RADIUS); an aimOffset of 0.3 steers the ray onto it.
+  const OFFSET = 0.3
+  const target = () => player('b', 7.5, 2.5 + 5 * Math.tan(OFFSET))
+
+  it('a target 0.3 rad off-axis is missed head-on (no offset)', () => {
+    const s = state(player('a', 2.5, 2.5, 0), target())
+    expect(fireHitscan('a', s, OPEN)).toBeNull()
+    expect(fireHitscan('a', s, OPEN, 0)).toBeNull() // explicit 0 is the same
+  })
+
+  it('the same target is hit with aimOffset ≈ 0.3 (the ray follows the cursor, not the facing)', () => {
+    const s = state(player('a', 2.5, 2.5, 0), target())
+    expect(fireHitscan('a', s, OPEN, OFFSET)).toBe('b')
+  })
+
+  it('aimOffset does not mutate the shooter (pure direction steer, facing untouched)', () => {
+    const a = player('a', 2.5, 2.5, 0)
+    const s = state(a, target())
+    fireHitscan('a', s, OPEN, OFFSET)
+    expect(a.dir).toBe(0)
+    expect(a.pos).toEqual({ x: 2.5, y: 2.5 })
+  })
+})
