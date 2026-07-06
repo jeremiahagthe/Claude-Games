@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
-  "bin": { "fragwait": "./bin/fragwait.js" },
+  "bin": { "fragwait": "bin/fragwait.js" },
   "files": ["dist", "bin"],
   "scripts": { "build": "tsc -p tsconfig.json" },
   "dependencies": { "@fragwait/core": "0.1.0", "ws": "8.21.0" }
