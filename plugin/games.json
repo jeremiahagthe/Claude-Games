@@ -1,0 +1,9 @@
+{
+  "games": [
+    {
+      "id": "fragwait",
+      "title": "fragwait — terminal FPS deathmatch",
+      "cmd": "npx -y fragwait@0.1.0"
+    }
+  ]
+}

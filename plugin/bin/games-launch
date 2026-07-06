@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Launch the next game in the arcade rotation on a separate terminal surface
+# (Claude owns this TTY). Reads plugin/games.json, advances rotation state in
+# ~/.fragwait/rotation.json (the runtime dir the fragwait client already owns),
+# and opens the picked game's cmd on the best available terminal surface.
+set -u
+
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+REGISTRY="$ROOT/games.json"
+STATE_DIR="${HOME}/.fragwait"
+STATE_FILE="$STATE_DIR/rotation.json"
+mkdir -p "$STATE_DIR"
+
+# Testing seam: override which "Applications" dir the macOS terminal-preference
+# checks look under, so tests can simulate "iTerm2/Ghostty/kitty (not) installed"
+# without depending on what's actually on the machine running the tests.
+APPS_DIR="${GAMES_APPS_DIR:-/Applications}"
+
+# --- pick the next game (rotation.json: {"next": N}; missing/corrupt -> 0) ---
+PICK_OUTPUT=$(node -e '
+const fs = require("fs");
+const [registryPath, statePath] = process.argv.slice(1);
+let games;
+try {
+  const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+  games = parsed.games;
+  if (!Array.isArray(games) || games.length === 0) throw new Error("empty registry");
+} catch (e) {
+  process.stderr.write("games-launch: bad registry at " + registryPath + ": " + e.message + "\n");
+  process.exit(1);
+}
+let next = 0;
+try {
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  if (Number.isInteger(state.next) && state.next >= 0) next = state.next;
+} catch (e) {
+  next = 0;
+}
+const idx = next % games.length;
+const game = games[idx];
+fs.writeFileSync(statePath, JSON.stringify({ next: idx + 1 }));
+process.stdout.write([game.id || "", game.title || game.id || "game", game.cmd || ""].join("\n"));
+' "$REGISTRY" "$STATE_FILE") || { echo "games: could not read the games registry at $REGISTRY"; exit 0; }
+
+GAME_ID=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '1p')
+GAME_TITLE=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '2p')
+GAME_CMD=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '3p')
+
+if [ -z "$GAME_CMD" ]; then
+  echo "games: registry entry '$GAME_ID' has no cmd, nothing to launch"
+  exit 0
+fi
+
+# Local-dev escape hatch until fragwait is published to npm: overrides the
+# registry's cmd only for the fragwait entry.
+CMD="$GAME_CMD"
+if [ "$GAME_ID" = "fragwait" ] && [ -n "${FRAGWAIT_CMD:-}" ]; then
+  CMD="$FRAGWAIT_CMD"
+fi
+
+# --- tmux: inherits the outer terminal's capability ---
+if [ -n "${TMUX:-}" ]; then
+  tmux split-window -h "$CMD" && { echo "games: opening $GAME_TITLE in a tmux split (game right, Claude left)"; exit 0; }
+fi
+
+# Escape a string for embedding inside an AppleScript double-quoted string
+# literal: backslashes first, then double quotes. Get this order wrong and a
+# cmd containing a double quote breaks out of the string (or worse).
+escape_for_applescript() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+case "$(uname -s)" in
+  Darwin)
+    ITERM_INSTALLED=0
+    if [ -d "$APPS_DIR/iTerm.app" ]; then
+      ITERM_INSTALLED=1
+    elif osascript -e 'id of application "iTerm"' >/dev/null 2>&1; then
+      ITERM_INSTALLED=1
+    fi
+
+    if [ "$ITERM_INSTALLED" -eq 1 ]; then
+      ESCAPED_CMD=$(escape_for_applescript "$CMD")
+      osascript >/dev/null 2>&1 <<APPLESCRIPT
+tell application "iTerm"
+  create window with default profile
+  tell current session of current window
+    write text "$ESCAPED_CMD"
+  end tell
+end tell
+APPLESCRIPT
+      if [ $? -eq 0 ]; then echo "games: opening $GAME_TITLE in a new iTerm2 window"; exit 0; fi
+    fi
+
+    if [ -d "$APPS_DIR/Ghostty.app" ]; then
+      open -na Ghostty --args -e "$CMD" >/dev/null 2>&1 && { echo "games: opening $GAME_TITLE in a new Ghostty window"; exit 0; }
+    fi
+
+    if [ -d "$APPS_DIR/kitty.app" ]; then
+      open -na kitty --args "$CMD" >/dev/null 2>&1 && { echo "games: opening $GAME_TITLE in a new kitty window"; exit 0; }
+    fi
+
+    ESCAPED_CMD=$(escape_for_applescript "$CMD")
+    osascript >/dev/null 2>&1 <<APPLESCRIPT
+tell application "Terminal"
+  activate
+  do script "$ESCAPED_CMD"
+end tell
+APPLESCRIPT
+    if [ $? -eq 0 ]; then
+      echo "games: opening $GAME_TITLE in a new Terminal window"
+      echo "tip: install iTerm2 for the full mouse-look experience (brew install --cask iterm2)"
+      exit 0
+    fi
+    ;;
+  Linux)
+    if command -v x-terminal-emulator >/dev/null 2>&1; then
+      nohup x-terminal-emulator -e $CMD >/dev/null 2>&1 &
+      echo "games: opening $GAME_TITLE in a new terminal window"; exit 0
+    fi
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v wt.exe >/dev/null 2>&1; then
+      wt.exe new-tab -- cmd /c "$CMD" && { echo "games: opening $GAME_TITLE in a Windows Terminal tab"; exit 0; }
+    fi
+    ;;
+esac
+
+echo "games: could not open a terminal automatically - run this in another terminal:"
+echo "  $CMD"
+exit 0
