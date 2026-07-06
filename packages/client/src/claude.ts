@@ -51,12 +51,24 @@ export async function startClaudeListener(dir = DEFAULT_DIR): Promise<ClaudeList
   }
 }
 
+// A busy-* marker older than this is treated as abandoned (crashed session, force-quit
+// terminal, SIGKILL, plugin uninstalled mid-task) rather than "still busy". Without a bound,
+// the newest-of-all-markers logic below means one leaked marker makes every future game show
+// an ever-growing "Claude working Nh" forever, since only the owning session's own hooks
+// (notify.sh) ever clean up its marker on a clean Stop/Notification.
+const STALE_MS = 4 * 60 * 60 * 1000 // 4 hours
+
 export function busyElapsedSeconds(dir = DEFAULT_DIR, now = Date.now()): number | null {
   let newest = 0
   try {
     for (const f of readdirSync(dir)) {
       if (!f.startsWith('busy-')) continue
-      const m = statSync(join(dir, f)).mtimeMs
+      const path = join(dir, f)
+      const m = statSync(path).mtimeMs
+      if (now - m > STALE_MS) {
+        try { unlinkSync(path) } catch { /* best effort prune; another process may have raced us */ }
+        continue
+      }
       if (m > newest) newest = m
     }
   } catch {

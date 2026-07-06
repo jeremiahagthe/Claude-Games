@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -61,5 +61,31 @@ describe('busyElapsedSeconds', () => {
     const s = busyElapsedSeconds(dir)
     expect(s).toBeGreaterThanOrEqual(89)
     expect(s).toBeLessThanOrEqual(95)
+  })
+
+  it('ignores and prunes a marker older than the staleness bound (crashed session)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fragwait-'))
+    const f = join(dir, 'busy-crashed')
+    writeFileSync(f, '')
+    const fiveHoursAgo = (Date.now() - 5 * 60 * 60 * 1000) / 1000 // beyond the 4h staleness bound
+    utimesSync(f, fiveHoursAgo, fiveHoursAgo)
+    expect(busyElapsedSeconds(dir)).toBeNull()
+    expect(existsSync(f)).toBe(false) // best-effort pruned in the same pass
+  })
+
+  it('reports the fresh marker and ignores a stale one when both are present', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fragwait-'))
+    const stale = join(dir, 'busy-crashed')
+    writeFileSync(stale, '')
+    const fiveHoursAgo = (Date.now() - 5 * 60 * 60 * 1000) / 1000
+    utimesSync(stale, fiveHoursAgo, fiveHoursAgo)
+    const fresh = join(dir, 'busy-active')
+    writeFileSync(fresh, '')
+    const ninetySecondsAgo = (Date.now() - 90_000) / 1000
+    utimesSync(fresh, ninetySecondsAgo, ninetySecondsAgo)
+    const s = busyElapsedSeconds(dir)
+    expect(s).toBeGreaterThanOrEqual(89)
+    expect(s).toBeLessThanOrEqual(95)
+    expect(existsSync(stale)).toBe(false) // pruned even though a fresh marker also exists
   })
 })

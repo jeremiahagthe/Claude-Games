@@ -1,0 +1,7 @@
+# Keep the published tarball limited to the files this package actually ships.
+# npm only consults .gitignore/.npmignore in the SAME package directory (not the repo-root
+# .gitignore), so without this, a locally-generated Python bytecode cache under scripts/
+# (created by simply running mouselock-helper.py, e.g. via the hooks/launcher test suites)
+# would leak into `npm pack` output even though it's harmless build noise.
+__pycache__/
+*.pyc
