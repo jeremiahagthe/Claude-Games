@@ -21,8 +21,12 @@ export class MatchDO implements DurableObject {
         return
       }
       // first message must be join
+      // re(create) the host lazily here: the tick loop may have nulled `this.host` (room went
+      // empty) between this socket's `fetch()` and its first message, so the eager `??=` in
+      // `fetch()` can no longer be trusted to have populated it.
       const joinId = raw.includes('"join"')
-        ? this.host!.join({ send: (d) => server.send(d), close: () => server.close(1000, 'bye') },
+        ? (this.host ??= new MatchHost(Math.floor(Math.random() * 2 ** 31))).join(
+            { send: (d) => server.send(d), close: () => server.close(1000, 'bye') },
             sanitizeHandle((JSON.parse(raw) as { handle?: string }).handle ?? 'anon'))
         : null
       if (joinId === null) {
