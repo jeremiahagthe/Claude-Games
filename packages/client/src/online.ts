@@ -9,6 +9,7 @@ import { busyElapsedSeconds, startClaudeListener } from './claude.js'
 import { FrameBuffer, TermRenderer } from './framebuffer.js'
 import { drawGun } from './gun.js'
 import { KillFeed, hudRows } from './hud.js'
+import { waitForPress } from './input/dismiss.js'
 import { IntentTracker } from './input/intent.js'
 import { readOsKeyTimings } from './input/os-timings.js'
 import { KeyParser } from './input/parser.js'
@@ -256,7 +257,9 @@ export async function runOnline(opts: { name?: string; mute?: boolean; server: s
   if ((ended || closed) && fs) {
     finished = true
     term.write(`${ESC}[2J${ESC}[H` + finalScoreboard(fs))
-    await new Promise<void>((r) => process.stdin.once('data', () => r()))
+    // M1: only a real key/button press dismisses — never mouse motion, focus
+    // changes, or the release of a key held when the match ended.
+    await waitForPress(process.stdin, parser)
   }
   process.stdout.off('resize', onResize)
   await listener.close()
