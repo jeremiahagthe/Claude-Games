@@ -1,4 +1,4 @@
-import { makeInput, type PlayerInput } from 'fragwait-core'
+import { KEY_TURN_AXIS, TURN_SPEED, makeInput, type PlayerInput } from 'fragwait-core'
 import { RENDER_HALF_FOV } from '../raycast.js'
 import { FACTORY_TIMINGS, type OsKeyTimings } from './os-timings.js'
 import type { KeyEvent } from './parser.js'
@@ -35,10 +35,15 @@ const MOVE_LATCH: Record<string, { axis: 'forward' | 'strafe'; dir: 1 | -1 }> = 
 const TURN_TAP_RAD = 0.06
 // Pending tap budget cap (±4 taps); excess taps are dropped, never banked.
 const TURN_PENDING_CAP_RAD = 0.24
-// Rotation the sim performs in one 20Hz tick at axis ±1 — must mirror core's
-// TURN_SPEED (2.6 rad/s / 20). sample() drains the pending budget by exactly
-// the emitted fraction × this, so emitted rotation === enqueued quanta.
-const TURN_TICK_RAD = 2.6 / 20
+// Rotation the sim performs in one 20Hz tick at axis ±1 — core's TURN_SPEED
+// directly (feel-11 pins the import; they can never drift apart again).
+// sample() drains the pending budget by exactly the emitted fraction × this,
+// so emitted rotation === enqueued quanta. Feel-11 doubled the rate to
+// 5.2 rad/s (0.26/tick): the mouse budget drains fast enough to track the
+// hand, and keyboard taps are unaffected (a tap emits exactly its radians
+// regardless of drain rate — budget conservation). Keyboard HOLDS compensate
+// by emitting KEY_TURN_AXIS instead of ±1, keeping their 2.6 rad/s feel.
+const TURN_TICK_RAD = TURN_SPEED
 
 // --- Movement easing --------------------------------------------------------
 // Per-20Hz-tick easing on movement axes only (turn is never eased). The latch
@@ -68,8 +73,8 @@ const MOUSE_ACCEL = 0.004 // extra rad/cell per additional cell of event speed
 const MOUSE_DX_CLAMP = 8
 // Mouse-fed budget saturation: a stale look backlog is worse than a dropped
 // one, so a mouse contribution never leaves more than this banked (the sim
-// drains 0.13 rad/tick, so this caps the replay tail at ~230ms). Keyboard tap
-// quanta are exempt (see enqueueTurnQuantum) — they are intentional units.
+// drains 0.26 rad/tick since feel-11, so this caps the replay tail at ~115ms).
+// Keyboard tap quanta are exempt (see enqueueTurnQuantum) — intentional units.
 const MOUSE_SATURATION_RAD = 0.6
 
 // --- Cursor aim (pointer IS the crosshair, active in BOTH tiers) ------------
@@ -82,13 +87,16 @@ const MOUSE_SATURATION_RAD = 0.6
 // edge cursor keeps turning and pulling back inside the band stops it instantly.
 const BAND_START = 0.85
 // Max magnitude of the mouse turn contribution at the very edge (feel-8: a
-// deliberate lean, not a whip — half the old feel-7 max).
-const EDGE_TURN_MAX = 0.5
+// deliberate lean, not a whip — half the old feel-7 max). Feel-11 halved the
+// AXIS value (0.5 → 0.25) because TURN_SPEED doubled: the physical rate at the
+// edge is unchanged (0.25 × 5.2 = the old 0.5 × 2.6 = 1.3 rad/s).
+const EDGE_TURN_MAX = 0.25
 // Per-sample() step cap when the smoothed band value's magnitude is RISING
 // (pointer pushing further into the band): full EDGE_TURN_MAX reached in
 // ~5 samples (≈250ms @ 20Hz) — never an instant cliff. Falling magnitude
 // (pointer pulled back) snaps straight to target — stopping must be instant.
-const BAND_ATTACK_PER_TICK = 0.12
+// Halved with EDGE_TURN_MAX in feel-11, preserving the exact rad/s ramp.
+const BAND_ATTACK_PER_TICK = 0.06
 
 // --- Fire -------------------------------------------------------------------
 // Every space event latches fire for this long. Blaster cooldown is 500ms, so
@@ -390,10 +398,12 @@ export class IntentTracker {
 
   // ---- Tier 2: sampling helpers ---------------------------------------------
 
-  // Turn axis: hold mode is continuous ±1; otherwise drain the pending tap
-  // budget by exactly what this tick's rotation capacity allows. No easing on
-  // either path — emitted rotation × TURN_TICK_RAD always equals the quanta
-  // that were enqueued (minus explicit zeroing by opposite-direction events).
+  // Turn axis: hold mode is continuous ±KEY_TURN_AXIS (the keyboard's
+  // 2.6 rad/s — the axis top half is mouse-look headroom, feel-11); otherwise
+  // drain the pending tap budget by exactly what this tick's rotation capacity
+  // allows. No easing on either path — emitted rotation × TURN_TICK_RAD always
+  // equals the quanta that were enqueued (minus explicit zeroing by
+  // opposite-direction events).
   private turnAxisTier2(now: number): number {
     let hold = 0
     for (const key of ['right', 'left'] as const) {
@@ -404,7 +414,7 @@ export class IntentTracker {
       if (now - st.lastEvent >= this.turnHoldDeathMs) st.hold = false
       else hold += key === 'right' ? 1 : -1
     }
-    if (hold !== 0) return hold
+    if (hold !== 0) return hold * KEY_TURN_AXIS
     return this.drainTurnPending()
   }
 
@@ -458,7 +468,7 @@ export class IntentTracker {
 
   // Tier-1 turn: same two modes as tier 2, driven by truth instead of
   // repeats — press enqueues one quantum; still held after TIER1_TURN_HOLD_MS
-  // means hold mode (±1) until release.
+  // means hold mode (±KEY_TURN_AXIS) until release.
   private turnAxisTier1(now: number): number {
     const holdFor = (key: string): number => {
       const at = this.t1Held.get(key)
@@ -466,7 +476,7 @@ export class IntentTracker {
     }
     const hold =
       (holdFor('right') >= TIER1_TURN_HOLD_MS ? 1 : 0) - (holdFor('left') >= TIER1_TURN_HOLD_MS ? 1 : 0)
-    if (hold !== 0) return hold
+    if (hold !== 0) return hold * KEY_TURN_AXIS
     return this.drainTurnPending()
   }
 

@@ -7,9 +7,15 @@ import type { KeyEvent } from '../src/input/parser.js'
 // Factory macOS timings (F1): first repeat 500ms after press, then every 83ms.
 const FACTORY = { initialDelayMs: 500, repeatIntervalMs: 83 }
 
+// Feel-11 turn-rate split (spec literals, deliberately NOT imported): core
+// TURN_SPEED doubled to 5.2 rad/s (0.26 rad/tick at axis 1) so the mouselock
+// budget can drain fast enough to track the hand; keyboard HOLDS and bots emit
+// HOLD_AXIS = 0.5 so their physical rate stays the pre-feel-11 2.6 rad/s.
+const TICK_RAD = 5.2 / 20 // mirrors core TURN_SPEED
+const HOLD_AXIS = 0.5 // mirrors core KEY_TURN_AXIS
 // Axis value emitted when one full tap quantum (0.06 rad) drains in a single
-// 20Hz tick (tick turn capacity = 2.6/20 = 0.13 rad at axis 1).
-const TAP_DRAIN = 0.06 / 0.13
+// 20Hz tick.
+const TAP_DRAIN = 0.06 / TICK_RAD
 
 function mkClock(start = 0): { now: () => number; set: (ms: number) => void } {
   let t = start
@@ -110,14 +116,14 @@ describe('S2 regression — turn taps are exact quanta, holds are full-rate, nev
     const samples = run(tracker, clock, events, 2000)
     let total = 0
     for (const s of samples.values()) {
-      total += s.turn * 0.13
+      total += s.turn * TICK_RAD
       // no tick exceeds tap-drain: taps never merge into a sweep or enter hold mode
       expect(Math.abs(s.turn)).toBeLessThanOrEqual(TAP_DRAIN + 1e-12)
     }
     expect(total).toBeCloseTo(5 * 0.06, 12)
   })
 
-  it('S2: press+hold reaches |turn| = 1 within one tick of the first repeat and stays 1 until hold death after the last repeat', () => {
+  it('S2: press+hold reaches |turn| = HOLD_AXIS within one tick of the first repeat and stays there until hold death after the last repeat', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     const events: Sched[] = [{ t: 0, key: 'right' }, ...repeats('right', 500, 1247, 83)]
@@ -126,8 +132,9 @@ describe('S2 regression — turn taps are exact quanta, holds are full-rate, nev
     expect(at(samples, 50).turn).toBeCloseTo(TAP_DRAIN, 12)
     // documented trade: one clean pause between the tap quantum and the OS's first repeat
     for (let t = 100; t <= 450; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(0)
-    // hold mode from the first repeat: instant full strength, no ramp, no easing
-    for (let t = 500; t <= 1400; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(1)
+    // hold mode from the first repeat: instant full hold strength (HOLD_AXIS =
+    // 2.6 rad/s, feel-11), no ramp, no easing
+    for (let t = 500; t <= 1400; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(HOLD_AXIS)
     // hold dies max(2×83, 180) = 180ms after the last repeat (1247): exact 0, no easing tail
     for (let t = 1450; t <= 1600; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(0)
   })
@@ -164,7 +171,7 @@ describe('turn precision — tap quanta are exact, conserved, capped', () => {
     const samples = run(tracker, clock, [{ t: 0, key: 'right' }], 500)
     expect(at(samples, 50).turn).toBeCloseTo(TAP_DRAIN, 12)
     for (let t = 100; t <= 500; t += 50) expect(at(samples, t).turn).toBe(0)
-    const total = [...samples.values()].reduce((acc, s) => acc + s.turn * 0.13, 0)
+    const total = [...samples.values()].reduce((acc, s) => acc + s.turn * TICK_RAD, 0)
     expect(total).toBeCloseTo(0.06, 12)
   })
 
@@ -181,21 +188,23 @@ describe('turn precision — tap quanta are exact, conserved, capped', () => {
   })
 
   it('an opposite tap mid-drain zeroes the remaining pending (the undrained remainder is dropped, not emitted)', () => {
+    // Feel-11: the keyboard cap (0.24) is now below one tick's capacity (0.26),
+    // so a keyboard-only budget always empties in a single tick — a mid-drain
+    // remainder can only exist when the mouse has inflated the budget. Feed it
+    // via mouselock deltas instead of re-taps to keep exercising the zeroing.
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    // three re-taps 130ms apart (past the steady-repeat gap, inside entry liveness): 0.18 rad pending
-    for (const t of [0, 130, 260]) {
-      clock.set(t)
-      tracker.onKey({ key: 'right', kind: 'press' })
-    }
-    clock.set(300)
-    expect(tracker.sample(1).turn).toBe(1) // full tick drains 0.13, leaving 0.05 pending
-    clock.set(320)
-    tracker.onKey({ key: 'left', kind: 'press' }) // zeroes the 0.05 remainder, enqueues -0.06
-    clock.set(350)
+    tracker.setAimMode('mouselock')
+    tracker.onMouseMotion(0, 12, 80, 24) // baseline
+    tracker.onMouseMotion(8, 12, 80, 24) // dx 8 → 8·(0.035 + 0.004·7) = 0.504 rad pending
+    clock.set(50)
+    expect(tracker.sample(1).turn).toBe(1) // full tick drains 0.26, leaving 0.244 pending
+    clock.set(60)
+    tracker.onKey({ key: 'left', kind: 'press' }) // zeroes the 0.244 remainder, enqueues -0.06
+    clock.set(100)
     expect(tracker.sample(2).turn).toBeCloseTo(-TAP_DRAIN, 12)
-    clock.set(400)
-    expect(tracker.sample(3).turn).toBe(0) // rightward total stayed 0.13 of the enqueued 0.18
+    clock.set(150)
+    expect(tracker.sample(3).turn).toBe(0) // rightward total stayed 0.26 of the enqueued 0.504
   })
 
   it('the pending budget caps at ±0.24 rad: excess taps are dropped, total emitted rotation is the cap', () => {
@@ -209,7 +218,7 @@ describe('turn precision — tap quanta are exact, conserved, capped', () => {
     let total = 0
     for (let t = 550; t <= 800; t += 50) {
       clock.set(t)
-      total += tracker.sample(t / 50).turn * 0.13
+      total += tracker.sample(t / 50).turn * TICK_RAD
     }
     expect(total).toBeCloseTo(0.24, 12)
   })
@@ -220,7 +229,7 @@ describe('turn hold classification — the first-repeat band separates OS repeat
     const clock = mkClock()
     const tracker = mkTracker(clock)
     const samples = run(tracker, clock, [{ t: 0, key: 'right' }, { t: 500, key: 'right' }], 600)
-    expect(at(samples, 500).turn).toBe(1)
+    expect(at(samples, 500).turn).toBe(HOLD_AXIS)
   })
 
   it('a human re-tap 400ms after a press (below the band) stays a tap: two quanta, never hold mode', () => {
@@ -229,7 +238,7 @@ describe('turn hold classification — the first-repeat band separates OS repeat
     const samples = run(tracker, clock, [{ t: 0, key: 'right' }, { t: 400, key: 'right' }], 900)
     expect(at(samples, 50).turn).toBeCloseTo(TAP_DRAIN, 12)
     expect(at(samples, 400).turn).toBeCloseTo(TAP_DRAIN, 12)
-    for (const s of samples.values()) expect(Math.abs(s.turn)).toBeLessThan(1) // no hold mode ever
+    for (const s of samples.values()) expect(Math.abs(s.turn)).toBeLessThan(HOLD_AXIS) // no hold mode ever
   })
 
   it('a re-tap ~initialDelay after a DEAD hold\'s last repeat stays a tap (the band only applies to the gap after a press)', () => {
@@ -251,7 +260,7 @@ describe('turn hold classification — the first-repeat band separates OS repeat
     const tracker = mkTracker(clock, { initialDelayMs: 500, repeatIntervalMs: 180 })
     const events: Sched[] = [{ t: 0, key: 'right' }, { t: 500, key: 'right' }, { t: 680, key: 'right' }, { t: 860, key: 'right' }, { t: 1040, key: 'right' }]
     const samples = run(tracker, clock, events, 1500)
-    for (let t = 500; t <= 1350; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(1)
+    for (let t = 500; t <= 1350; t += 50) expect(at(samples, t).turn, `turn at t=${t}`).toBe(HOLD_AXIS)
     expect(at(samples, 1400).turn).toBe(0) // death exactly 2×180ms after the last repeat
   })
 
@@ -265,7 +274,7 @@ describe('turn hold classification — the first-repeat band separates OS repeat
       ...repeats('w', 1220, 1400, 83),
     ]
     const samples = run(tracker, clock, events, 1400)
-    expect(at(samples, 800).turn).toBe(1) // 134ms after right's last event: still alive
+    expect(at(samples, 800).turn).toBe(HOLD_AXIS) // 134ms after right's last event: still alive
     expect(at(samples, 850).turn).toBe(0) // ≥180ms: dead, despite w's events flowing
     expect(at(samples, 850).forward).toBeGreaterThan(0) // w itself is alive
   })
@@ -279,7 +288,7 @@ describe('turn hold classification — the first-repeat band separates OS repeat
       { t: 700, key: 'left' },
     ]
     const samples = run(tracker, clock, events, 800)
-    expect(at(samples, 650).turn).toBe(1)
+    expect(at(samples, 650).turn).toBe(HOLD_AXIS)
     expect(at(samples, 700).turn).toBeCloseTo(-TAP_DRAIN, 12) // hold dead, left's quantum drains
     expect(at(samples, 750).turn).toBe(0)
   })
@@ -467,7 +476,7 @@ describe('tier 1 (kitty) — real press/repeat/release', () => {
     expect(tracker.sample(1).forward).toBe(0)
   })
 
-  it('turn: tap = one quantum; held ≥ 150ms = hold mode ±1; release = instant 0', () => {
+  it('turn: tap = one quantum; held ≥ 150ms = hold mode ±HOLD_AXIS; release = instant 0', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     tracker.enableTier1()
@@ -475,9 +484,9 @@ describe('tier 1 (kitty) — real press/repeat/release', () => {
     expect(tracker.sample(1).turn).toBeCloseTo(TAP_DRAIN, 12) // the press quantum
     expect(tracker.sample(2).turn).toBe(0) // drained; not yet held long enough for hold mode
     clock.set(150)
-    expect(tracker.sample(3).turn).toBe(1) // hold mode: full rate, no ramp
+    expect(tracker.sample(3).turn).toBe(HOLD_AXIS) // hold mode: full keyboard rate, no ramp
     clock.set(1000)
-    expect(tracker.sample(4).turn).toBe(1)
+    expect(tracker.sample(4).turn).toBe(HOLD_AXIS)
     tracker.onKey({ key: 'right', kind: 'release' })
     expect(tracker.sample(5).turn).toBe(0)
   })
@@ -503,7 +512,7 @@ describe('tier 1 (kitty) — real press/repeat/release', () => {
     tracker.onKey({ key: 'right', kind: 'repeat' })
     expect(tracker.sample(2).turn).toBe(0) // no extra quanta, hold mode not yet reached
     clock.set(200)
-    expect(tracker.sample(3).turn).toBe(1) // hold mode purely from held-time
+    expect(tracker.sample(3).turn).toBe(HOLD_AXIS) // hold mode purely from held-time
   })
 
   it('fire: real held state; release clears it', () => {
@@ -556,8 +565,8 @@ describe('mapping — axes and fire combine', () => {
 // aimNorm = clamp((x − center)/halfWidth, −1, 1) with center = (viewCols+1)/2
 // and halfWidth = viewCols/2, maps to aimOffset = aimNorm·RENDER_HALF_FOV. The
 // view only turns when |aimNorm| pushes past BAND_START = 0.85, linearly
-// 0→EDGE_TURN_MAX (0.5) across the outer 15%, and that target is approached by
-// an eased smoothed value: at most 0.12 per sample() when rising, snapped
+// 0→EDGE_TURN_MAX across the outer 15%, and that target is approached by
+// an eased smoothed value: at most BAND_ATTACK_PER_TICK per sample() when rising, snapped
 // straight to the target when falling (instant release). onMouseMotion(x, y,
 // viewCols, viewRows) — y/viewRows are stored for the crosshair but never
 // touch the sim.
@@ -567,7 +576,12 @@ const AIM_CENTER = (VCOLS + 1) / 2 // 40.5
 const AIM_HALF = VCOLS / 2 // 40
 // The pointer x (may be fractional in a unit test) that yields a given aimNorm.
 const xForAimNorm = (n: number): number => AIM_CENTER + n * AIM_HALF
-const bandTurnTarget = (n: number): number => Math.sign(n) * 0.5 * ((Math.abs(n) - 0.85) / 0.15)
+// Feel-11: EDGE_TURN_MAX 0.5 → 0.25 and attack 0.12 → 0.06 in AXIS units —
+// TURN_SPEED doubled, so the physical edge-turn rate and ramp are unchanged
+// (0.25 × 5.2 = the old 0.5 × 2.6 = 1.3 rad/s max).
+const EDGE_MAX = 0.25
+const BAND_ATTACK = 0.06
+const bandTurnTarget = (n: number): number => Math.sign(n) * EDGE_MAX * ((Math.abs(n) - 0.85) / 0.15)
 
 describe('cursor aim — the pointer position IS the aim (both tiers)', () => {
   it('no pointer seen yet → aimOffset 0 and no mouse turn', () => {
@@ -611,16 +625,16 @@ describe('cursor aim — the pointer position IS the aim (both tiers)', () => {
     tracker.onMouseMotion(xForAimNorm(-1), 12, VCOLS, VROWS)
     const s = tracker.sample(1)
     expect(s.aimOffset).toBeCloseTo(-1 * RENDER_HALF_FOV, 12)
-    expect(s.turn).toBeCloseTo(-0.12, 12) // first sample: eased, capped at BAND_ATTACK_PER_TICK
+    expect(s.turn).toBeCloseTo(-BAND_ATTACK, 12) // first sample: eased, capped at BAND_ATTACK_PER_TICK
   })
 
-  it('aimNorm clamps at the far edge: aimOffset = RENDER_HALF_FOV, target 0.5 approached by easing', () => {
+  it('aimNorm clamps at the far edge: aimOffset = RENDER_HALF_FOV, target EDGE_MAX approached by easing', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     tracker.onMouseMotion(xForAimNorm(1.5), 12, VCOLS, VROWS) // past the edge → aimNorm clamps to 1
     const s = tracker.sample(1)
     expect(s.aimOffset).toBeCloseTo(RENDER_HALF_FOV, 12)
-    expect(s.turn).toBeCloseTo(0.12, 12) // first sample after entry: capped at 0.12, not the 0.5 target
+    expect(s.turn).toBeCloseTo(BAND_ATTACK, 12) // first sample after entry: capped at BAND_ATTACK, not the EDGE_MAX target
   })
 
   it('geometry follows viewCols: the same x is a different aimNorm at a wider view', () => {
@@ -640,34 +654,34 @@ describe('cursor aim — the pointer position IS the aim (both tiers)', () => {
     tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS)
     const s = tracker.sample(1)
     expect(s.aimOffset).toBeCloseTo(1 * RENDER_HALF_FOV, 12)
-    expect(s.turn).toBeCloseTo(0.12, 12) // same easing as tier 2
+    expect(s.turn).toBeCloseTo(BAND_ATTACK, 12) // same easing as tier 2
   })
 })
 
 describe('cursor aim — edge-band view turn is eased, not instant (feel-8)', () => {
-  it('a parked cursor at the edge ramps toward the 0.5 target, ≤0.12 on the first sample, reaching 0.5 within 5 samples', () => {
+  it('a parked cursor at the edge ramps toward the EDGE_MAX target, ≤BAND_ATTACK on the first sample, reaching EDGE_MAX within 5 samples', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // aimNorm 1 → target 0.5
+    tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // aimNorm 1 → target EDGE_MAX
     const first = tracker.sample(1).turn
     expect(first).toBeGreaterThan(0)
-    expect(first).toBeLessThanOrEqual(0.12 + 1e-9)
+    expect(first).toBeLessThanOrEqual(BAND_ATTACK + 1e-9)
     let last = first
     for (let i = 2; i <= 5; i++) {
       const t = tracker.sample(i).turn
       expect(t).toBeGreaterThanOrEqual(last) // monotonically rising toward the target
       last = t
     }
-    expect(last).toBeCloseTo(0.5, 12) // full EDGE_TURN_MAX reached by sample 5
-    for (let i = 6; i <= 10; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBeCloseTo(0.5, 12) // holds
+    expect(last).toBeCloseTo(EDGE_MAX, 12) // full EDGE_TURN_MAX reached by sample 5
+    for (let i = 6; i <= 10; i++) expect(tracker.sample(i).turn, `sample ${i}`).toBeCloseTo(EDGE_MAX, 12) // holds
   })
 
   it('pulling the cursor back inside the band stops the turn immediately, even mid-ramp', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
     tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS)
-    tracker.sample(1) // first ramp step (0.12), well short of the 0.5 target
-    tracker.sample(2) // second ramp step (0.24)
+    tracker.sample(1) // first ramp step (BAND_ATTACK), well short of the EDGE_MAX target
+    tracker.sample(2) // second ramp step (2×BAND_ATTACK)
     tracker.onMouseMotion(AIM_CENTER, 12, VCOLS, VROWS) // pulled back to center mid-ramp
     expect(tracker.sample(3).turn).toBe(0) // instant release: no lingering ramp momentum
   })
@@ -677,20 +691,20 @@ describe('cursor aim — edge-band view turn is eased, not instant (feel-8)', ()
     const tracker = mkTracker(clock)
     tracker.onMouseMotion(xForAimNorm(0.85), 12, VCOLS, VROWS) // exactly BAND_START
     expect(tracker.sample(1).turn).toBe(0)
-    tracker.onMouseMotion(xForAimNorm(0.925), 12, VCOLS, VROWS) // halfway across the band: target 0.25
+    tracker.onMouseMotion(xForAimNorm(0.925), 12, VCOLS, VROWS) // halfway across the band: target EDGE_MAX/2
     const t = tracker.sample(2).turn
-    expect(t).toBeCloseTo(Math.min(0.12, bandTurnTarget(0.925)), 12)
+    expect(t).toBeCloseTo(Math.min(BAND_ATTACK, bandTurnTarget(0.925)), 12)
   })
 
   it('the edge-band mouse turn ADDS to a keyboard tap (feel-4 keyboard budget unchanged)', () => {
     const clock = mkClock()
     const tracker = mkTracker(clock)
-    tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // mouse turn target 0.5, eased
+    tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // mouse turn target EDGE_MAX, eased
     tracker.onKey({ key: 'right', kind: 'press' }) // one keyboard quantum on top
-    // first tick: 0.12 (eased mouse) + TAP_DRAIN (keyboard), clamped to [-1, 1]
-    expect(tracker.sample(1).turn).toBeCloseTo(0.12 + TAP_DRAIN, 12)
+    // first tick: BAND_ATTACK (eased mouse) + TAP_DRAIN (keyboard), clamped to [-1, 1]
+    expect(tracker.sample(1).turn).toBeCloseTo(BAND_ATTACK + TAP_DRAIN, 12)
     // the keyboard quantum drains in one tick; the mouse turn keeps ramping from state
-    expect(tracker.sample(2).turn).toBeCloseTo(0.24, 12)
+    expect(tracker.sample(2).turn).toBeCloseTo(2 * BAND_ATTACK, 12)
   })
 
   it('sign symmetry: the negative-side ramp mirrors the positive-side ramp exactly', () => {
@@ -709,10 +723,10 @@ describe('cursor aim — the pointer survives resetTransient (physical position)
     const tracker = mkTracker(clock)
     tracker.onMouseMotion(xForAimNorm(1), 12, VCOLS, VROWS) // parked at the edge
     tracker.sample(1)
-    tracker.sample(2) // ramp underway (0.24)
+    tracker.sample(2) // ramp underway (2×BAND_ATTACK)
     tracker.resetTransient() // self-death: clears the smoothed band-turn state
     const s = tracker.sample(3)
-    expect(s.turn).toBeCloseTo(0.12, 12) // ramp restarts from 0, not from where it left off
+    expect(s.turn).toBeCloseTo(BAND_ATTACK, 12) // ramp restarts from 0, not from where it left off
     expect(s.aimOffset).toBeCloseTo(RENDER_HALF_FOV, 12) // still aiming at the edge (pointer not cleared)
   })
 })
@@ -835,8 +849,8 @@ describe('mouse fire — real left-button press/release, active in BOTH tiers', 
 // delta look. Motion deltas (dx in cells, clamped ±8) feed the SAME shared turn
 // budget the keyboard uses at an accelerated dx·(0.035 + 0.004·(|dx|−1)) rad,
 // saturating the mouse contribution at ±0.6 rad; aimOffset is forced 0 and the cursor-aim edge band
-// contributes nothing. TURN_TICK_RAD = 0.13.
-const MTICK = 0.13
+// contributes nothing. TURN_TICK_RAD = core TURN_SPEED = 0.26 (feel-11).
+const MTICK = TICK_RAD
 // Fully drains the turn budget over up to 50 ticks, returning total rotation
 // (Σ turn·TURN_TICK_RAD). In mouselock mode mouseTurn/aimOffset are 0, so the
 // sum equals exactly the enqueued pending budget.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DIFFICULTY_SKILLS, MATCH_TICKS } from '../src/constants.js'
+import { DIFFICULTY_SKILLS, KEY_TURN_AXIS, MATCH_TICKS } from '../src/constants.js'
 import { BotBrain } from '../src/bots.js'
 import { parseMap } from '../src/map.js'
 import { mapById } from '../src/maps.js'
@@ -37,7 +37,10 @@ describe('BotBrain', () => {
     const brain = new BotBrain('bot1', 5)
     const input = brain.think(room.state, room.map)
     expect([-1, 0, 1]).toContain(input.forward)
-    expect([-1, 0, 1]).toContain(input.turn)
+    // Feel-11: bots emit KEY_TURN_AXIS, never the full axis — the top half of
+    // the turn range is mouse-look headroom, so a bot at ±1 would spin at
+    // double its designed 2.6 rad/s.
+    expect([-KEY_TURN_AXIS, 0, KEY_TURN_AXIS]).toContain(input.turn)
     expect(typeof input.fire).toBe('boolean')
   })
 

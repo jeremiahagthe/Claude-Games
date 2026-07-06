@@ -3,7 +3,14 @@ export const TICK_MS = 1000 / TICK_RATE
 export const MATCH_TICKS = 3 * 60 * TICK_RATE
 
 export const MOVE_SPEED = 3.2 / TICK_RATE // map cells per tick
-export const TURN_SPEED = 2.6 / TICK_RATE // radians per tick
+// Radians per tick at full turn axis. 5.2 rad/s is the MOUSE-LOOK ceiling
+// (feel-11): the client's relative-delta budget may drain at up to the full
+// axis, so a fast swipe tracks the hand instead of banking a slow replay tail.
+export const TURN_SPEED = 5.2 / TICK_RATE
+// Keyboard holds and bots emit this fraction of the full axis — exactly the
+// pre-feel-11 rate (0.5 × 5.2 = 2.6 rad/s), so doubling TURN_SPEED changed
+// nothing for them. The upper half of the axis range is mouse-only headroom.
+export const KEY_TURN_AXIS = 0.5
 // Cursor-aim: max fire-direction offset from facing, in radians. The client's
 // RENDER_HALF_FOV (half the render FOV) must stay ≤ this so the aim can always
 // reach the on-screen crosshair.

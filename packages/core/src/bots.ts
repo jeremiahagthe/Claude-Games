@@ -1,5 +1,5 @@
 import { castWall } from './combat.js'
-import { AIM_WANDER_TICKS, AIM_WOBBLE, REACTION_TICKS_SCALE, RESIGHT_GAP_TICKS } from './constants.js'
+import { AIM_WANDER_TICKS, AIM_WOBBLE, KEY_TURN_AXIS, REACTION_TICKS_SCALE, RESIGHT_GAP_TICKS } from './constants.js'
 import type { GameMap } from './map.js'
 import { isWall } from './map.js'
 import { makeInput, wrapAngle } from './movement.js'
@@ -82,7 +82,7 @@ export class BotBrain {
       const diff = wrapAngle(desired - me.dir)
       const dist = Math.hypot(enemy.pos.x - me.pos.x, enemy.pos.y - me.pos.y)
       return makeInput(++this.seq, {
-        turn: diff > 0.05 ? 1 : diff < -0.05 ? -1 : 0,
+        turn: diff > 0.05 ? KEY_TURN_AXIS : diff < -0.05 ? -KEY_TURN_AXIS : 0,
         forward: dist > 5 ? 1 : dist < 2.5 ? -1 : 0,
         strafe: this.rng() < 0.3 ? (this.rng() < 0.5 ? 1 : -1) : 0,
         fire: reactionElapsed && Math.abs(diff) < AIM_FIRE_CONE && this.rng() < 0.15 + this.skill * 0.5,
@@ -102,7 +102,7 @@ export class BotBrain {
     const desired = Math.atan2(this.waypoint.y - me.pos.y, this.waypoint.x - me.pos.x)
     const diff = wrapAngle(desired - me.dir)
     return makeInput(++this.seq, {
-      turn: diff > 0.1 ? 1 : diff < -0.1 ? -1 : 0,
+      turn: diff > 0.1 ? KEY_TURN_AXIS : diff < -0.1 ? -KEY_TURN_AXIS : 0,
       forward: Math.abs(diff) < 1.2 ? 1 : 0,
     })
   }
