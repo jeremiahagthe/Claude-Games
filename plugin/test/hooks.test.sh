@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # Fixture test for busy.sh + notify.sh. Run from repo root: bash plugin/test/hooks.test.sh
+#
+# Note: this test invokes busy.sh/notify.sh directly as plain shell scripts, so it
+# cannot exercise Claude Code's async hook dispatch (where "async": true hooks run
+# fire-and-forget and have their JSON stdout DISCARDED). That's exactly why
+# plugin/hooks/hooks.json keeps the notify.sh entries synchronous (no "async": true):
+# their stdout carries the terminalSequence OSC-9 desktop-notification payload, which
+# would never reach the terminal if dispatched async. busy.sh emits nothing that needs
+# applying, so it stays async there.
 set -euo pipefail
 export HOME=$(mktemp -d)
 DIR="$HOME/.fragwait"
