@@ -47,6 +47,23 @@ const TURN_TICK_RAD = 2.6 / 20
 const ATTACK_PER_TICK = 0.55
 const RELEASE_PER_TICK = 0.3
 
+// --- Mouselock look (CS-style relative delta; darwin + helper only) ---------
+// When the OS pointer is hidden and pinned by the mouselock helper, the
+// terminal's motion deltas ARE the look input: each event's horizontal delta
+// (in cells) adds dx·MOUSE_SENS radians to the SAME shared pending-turn budget
+// the keyboard feeds, so the view follows the hand 1:1 and STOPS when it stops.
+// Budget drains through the same TURN_TICK_RAD pipe, so TURN_SPEED still caps
+// the rate. Only active while setAimMode('mouselock'); in cursor mode the delta
+// path is dormant and the cursor-aim block below owns the mouse instead.
+const MOUSE_SENS = 0.035 // rad/cell — the mouse-look sensitivity tunable
+// Per-event delta clamp: swallows pointer teleports (a warp, window re-entry)
+// that would otherwise snap the view by hundreds of cells at once.
+const MOUSE_DX_CLAMP = 8
+// Mouse-fed budget saturation: a stale look backlog is worse than a dropped
+// one, so a mouse contribution never leaves more than this banked. Keyboard tap
+// quanta are exempt (see enqueueTurnQuantum) — they are intentional units.
+const MOUSE_SATURATION_RAD = 0.5
+
 // --- Cursor aim (pointer IS the crosshair, active in BOTH tiers) ------------
 // There is no pointer lock in any terminal, so the OS cursor is always visible:
 // make it the aim. The pointer's normalized horizontal offset from view center
@@ -102,6 +119,16 @@ export class IntentTracker {
   private smoothed: Record<'forward' | 'strafe', number> = { forward: 0, strafe: 0 }
   private smoothedBandTurn = 0
 
+  // Aim mode: 'cursor' = today's cursor-aim (aimNorm → aimOffset + eased edge
+  // band); 'mouselock' = CS-style relative delta look (aimOffset 0, no edge
+  // band, motion deltas feed the turn budget). Set by offline via setAimMode.
+  private aimMode: 'mouselock' | 'cursor' = 'cursor'
+  // Delta-look state (mouselock mode only). null until the first event after a
+  // mode switch/reset, so the first event stores position without a phantom
+  // delta. Motion events before this time update lastX but enqueue nothing.
+  private mouselockLastX: number | null = null
+  private ignoreDeltasUntilMs = -Infinity
+
   // Cursor aim/walk/fire (shared by both tiers). offline.ts routes raw pointer
   // cells + view geometry per event; the sim is 2D, so only x/viewCols feed the
   // aim and edge-band turn. y/viewRows are stored to complete the pointer-cell
@@ -151,6 +178,32 @@ export class IntentTracker {
     this.fireUntil = -Infinity
     this.smoothed = { forward: 0, strafe: 0 }
     this.smoothedBandTurn = 0
+    // Clear the mouselock delta state so a respawn/tier switch never replays a
+    // stale pointer jump; the stored cursor-aim position (lastMouseX) is
+    // deliberately left intact (see the method doc above).
+    this.clearDeltaState()
+  }
+
+  // ---- Aim mode (mouselock vs cursor) ---------------------------------------
+
+  // Switches the aim mode. Any switch clears the delta-look state so no stale
+  // jump is replayed the first time deltas resume.
+  setAimMode(mode: 'mouselock' | 'cursor'): void {
+    if (mode !== this.aimMode) this.aimMode = mode
+    this.clearDeltaState()
+  }
+
+  // After the game silently warps the pinned pointer, motion deltas would misread
+  // the teleport as look input. Suppress enqueues until nowMs: events in the
+  // window still update lastX (so the post-warp baseline is correct) but add
+  // nothing to the budget.
+  ignoreDeltasUntil(nowMs: number): void {
+    this.ignoreDeltasUntilMs = nowMs
+  }
+
+  private clearDeltaState(): void {
+    this.mouselockLastX = null
+    this.ignoreDeltasUntilMs = -Infinity
   }
 
   // ---- Cursor aim + walk + fire (shared by both tiers) ----------------------
@@ -163,6 +216,21 @@ export class IntentTracker {
     this.lastMouseY = y
     this.lastViewCols = viewCols
     this.lastViewRows = viewRows
+    if (this.aimMode === 'mouselock') this.feedDelta(x)
+  }
+
+  // Mouselock relative-look delta: first event after a reset only stores the
+  // baseline; later events add dx·MOUSE_SENS (dx clamped ±MOUSE_DX_CLAMP) to the
+  // shared turn budget, saturating the mouse contribution at ±MOUSE_SATURATION_RAD.
+  // During the post-warp ignore window, lastX still advances but nothing is
+  // enqueued (kills the warp-jump misread + any in-flight-event race).
+  private feedDelta(x: number): void {
+    const prev = this.mouselockLastX
+    this.mouselockLastX = x
+    if (prev === null || this.now() < this.ignoreDeltasUntilMs) return
+    const dx = Math.max(-MOUSE_DX_CLAMP, Math.min(MOUSE_DX_CLAMP, x - prev))
+    const next = this.turnPending + dx * MOUSE_SENS
+    this.turnPending = Math.max(-MOUSE_SATURATION_RAD, Math.min(MOUSE_SATURATION_RAD, next))
   }
 
   // Left button reports REAL press AND release → fire. Right/middle → hold-to-
@@ -288,6 +356,16 @@ export class IntentTracker {
 
   private enqueueTurnQuantum(sign: number): void {
     const next = this.turnPending + sign * TURN_TAP_RAD
+    // Keyboard taps keep their budget-conserving cap (±0.24): five taps bank at
+    // most four. But a tap is an intentional unit, so it is never clamped DOWN a
+    // budget the mouse has already inflated past the cap in the tap's own
+    // direction — it adds on top (the mouse saturation rule owns that ceiling,
+    // not this one). With no mouse input this branch is unreachable, so
+    // keyboard-only tap behavior stays bit-identical to feel-4/5.
+    if (Math.abs(this.turnPending) > TURN_PENDING_CAP_RAD && Math.sign(next) === Math.sign(this.turnPending)) {
+      this.turnPending = next
+      return
+    }
     this.turnPending = Math.max(-TURN_PENDING_CAP_RAD, Math.min(TURN_PENDING_CAP_RAD, next))
   }
 
@@ -382,8 +460,13 @@ export class IntentTracker {
     // the keyboard turn axis, makeInput clamping the sum to [-1, 1]. A held
     // walk-button overrides the forward source (latch in tier 2, binary axis in
     // tier 1) without modifying it.
-    const aimOffset = this.aimNorm() * RENDER_HALF_FOV
-    const mouseTurn = this.mouseTurn()
+    // In mouselock mode the pointer is hidden and pinned: the reticle is fixed
+    // at screen center (aimOffset 0) and the cursor-aim edge band contributes
+    // nothing — the delta path already fed the turn budget at event time. In
+    // cursor mode, aimNorm drives the fire offset and the eased edge band turns.
+    const mouselock = this.aimMode === 'mouselock'
+    const aimOffset = mouselock ? 0 : this.aimNorm() * RENDER_HALF_FOV
+    const mouseTurn = mouselock ? 0 : this.mouseTurn()
     if (this.tier1) {
       return makeInput(seq, {
         forward: this.walkHeld ? 1 : this.t1BinaryAxis(['w', 'up'], ['s', 'down']),

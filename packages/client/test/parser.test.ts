@@ -45,6 +45,11 @@ describe('KeyParser', () => {
     expect(p.feed('\x1b[9')).toEqual([])
     expect(p.feed('7;1:3u')).toEqual([{ key: 'a', kind: 'release' }])
   })
+  it('focus reporting: CSI I → focus-in, CSI O → focus-out (both press KeyEvents)', () => {
+    const p = new KeyParser()
+    expect(p.feed('\x1b[I')).toEqual([{ key: 'focus-in', kind: 'press' }])
+    expect(p.feed('\x1b[O')).toEqual([{ key: 'focus-out', kind: 'press' }])
+  })
   it('unknown CSI is swallowed', () => {
     const p = new KeyParser()
     expect(p.feed('\x1b[38;2;1;2;3m')).toEqual([])

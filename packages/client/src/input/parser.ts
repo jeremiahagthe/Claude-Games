@@ -73,6 +73,11 @@ export class KeyParser {
       const key = named ?? (code >= 32 && code < 127 ? String.fromCodePoint(code).toLowerCase() : null)
       return key ? { key, kind } : null
     }
+    // Focus reporting (DEC ?1004): `CSI I` = focus-in, `CSI O` = focus-out.
+    // Modeled as press KeyEvents so offline can drive mouselock re-engage;
+    // intent ignores them (not in TRACKED).
+    if (final === 'I') return { key: 'focus-in', kind: 'press' }
+    if (final === 'O') return { key: 'focus-out', kind: 'press' }
     if (final in ARROWS) {
       const kind = EVENTS[params.split(';')[1]?.split(':')[1] ?? '1'] ?? 'press'
       return { key: ARROWS[final]!, kind }

@@ -46,12 +46,18 @@ describe('TerminalSession', () => {
     expect(all.indexOf('\x1b[?1000h')).toBeLessThan(all.indexOf('\x1b[?1002h'))
     expect(all.indexOf('\x1b[?1002h')).toBeLessThan(all.indexOf('\x1b[?1003h'))
     expect(all.indexOf('\x1b[?1003h')).toBeLessThan(all.indexOf('\x1b[?1006h'))
+    // focus reporting (?1004) is enabled after the SGR mode (1006)
+    expect(all).toContain('\x1b[?1004h')
+    expect(all.indexOf('\x1b[?1006h')).toBeLessThan(all.indexOf('\x1b[?1004h'))
     // OSC 22 crosshair pointer shape is requested AFTER the mouse ladder
     expect(all).toContain('\x1b]22;crosshair\x1b\\')
     expect(all.indexOf('\x1b[?1006h')).toBeLessThan(all.indexOf('\x1b]22;crosshair'))
     written.length = 0
     t.restore()
     const rest = written.join('')
+    // focus reporting disabled on restore, mirrored before the mouse ladder pop
+    expect(rest).toContain('\x1b[?1004l')
+    expect(rest.indexOf('\x1b[?1004l')).toBeLessThan(rest.indexOf('\x1b[?1006l'))
     // OSC 22 default pointer shape is restored FIRST (mirror of enter), before
     // the mouse ladder is popped
     expect(rest).toContain('\x1b]22;default\x1b\\')

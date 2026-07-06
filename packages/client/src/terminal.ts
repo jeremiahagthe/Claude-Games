@@ -27,6 +27,9 @@ export class TerminalSession {
     // raw coordinate bytes. (Historically this also suppressed phantom trackpad
     // scroll → arrow-key translation in the alt screen.)
     this.write(`${ESC}[?1000h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h`)
+    // Focus reporting (?1004): the terminal emits CSI I / CSI O on focus
+    // gain/loss. Mouselock uses focus-out to release the hidden pinned pointer.
+    this.write(`${ESC}[?1004h`)
     // Request a crosshair OS pointer over the terminal (OSC 22, kitty
     // pointer-shape protocol — iTerm2/kitty/Ghostty honor it, others ignore the
     // unknown OSC). Cursor aim means the OS pointer IS the weapon, so shape it
@@ -42,6 +45,7 @@ export class TerminalSession {
     // mirror (SGR first, then 1003 → 1002 → 1000); then kitty pop (avoid flag
     // leak — spec risk list); then cursor/alt screen.
     this.write(`${ESC}]22;default${ESC}\\`)
+    this.write(`${ESC}[?1004l`) // focus reporting off (mirror of enter's ?1004h)
     this.write(`${ESC}[?1006l${ESC}[?1003l${ESC}[?1002l${ESC}[?1000l`)
     this.write(`${ESC}[<u`)
     this.write(`${ESC}[0m${ESC}[?25h${ESC}[?1049l`)

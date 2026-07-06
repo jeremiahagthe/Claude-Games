@@ -11,6 +11,7 @@ import { KillFeed, hudRows } from './hud.js'
 import { IntentTracker } from './input/intent.js'
 import { readOsKeyTimings } from './input/os-timings.js'
 import { KeyParser } from './input/parser.js'
+import { createMouselock, MouselockController, type Mouselock } from './mouselock.js'
 import { renderView } from './raycast.js'
 import { Sfx } from './sound.js'
 import { TerminalSession } from './terminal.js'
@@ -39,7 +40,9 @@ function interpolateState(prev: MatchState, curr: MatchState, alpha: number): Ma
   return { ...curr, players }
 }
 
-export async function runOffline(opts: { name?: string; mute?: boolean; difficulty?: Difficulty }): Promise<void> {
+export async function runOffline(
+  opts: { name?: string; mute?: boolean; difficulty?: Difficulty; mouselock?: () => Mouselock },
+): Promise<void> {
   const seedRng = mulberry32(Date.now() >>> 0)
   const map = MAPS[Math.floor(seedRng() * MAPS.length)]!
   const room = new MatchRoom(map, Math.floor(seedRng() * 2 ** 31))
@@ -60,6 +63,11 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   const intent = new IntentTracker(() => performance.now(), { timings: readOsKeyTimings() })
   const feed = new KillFeed()
   const sfx = new Sfx({ mute: opts.mute ?? false })
+  // macOS pointer-lock helper (graceful no-op elsewhere / if python3 is absent).
+  // The controller is the aim-mode state machine; dispose() is wired into every
+  // exit path below (HARD invariant — a leaked hidden cursor is a system bug).
+  const mouselock = (opts.mouselock ?? createMouselock)()
+  const mlCtl = new MouselockController(mouselock, intent, () => performance.now())
   let banner: string | null = null
   let scoreboardHeld = 0
   let quit = false
@@ -93,18 +101,23 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   const onData = (chunk: Buffer) => {
     for (const e of parser.feed(chunk)) {
       if ('type' in e) {
-        // Mouse: every position-bearing report (motion AND press/release) is
-        // the cursor aim — its cell IS the crosshair. Geometry rides along so
-        // aimNorm/edge-band stay resize-correct. Left = fire, right/middle =
-        // hold-to-walk (onMouseButton filters the rest).
+        // Mouse: every position-bearing report (motion AND press/release)
+        // feeds the tracker (cursor-aim cell in cursor mode / relative delta in
+        // mouselock mode) and the mode state machine (engage / warp). Geometry
+        // rides along so aimNorm/edge-band stay resize-correct. Left = fire,
+        // right/middle = hold-to-walk (onMouseButton filters the rest).
         pointer = { x: e.x, y: e.y }
         intent.onMouseMotion(e.x, e.y, viewCols, viewRows)
+        mlCtl.onMouseEvent(e.x, e.y)
         if (e.button === 'left' || e.button === 'right' || e.button === 'middle') {
           intent.onMouseButton(e.button, e.action)
         }
         continue
       }
       if (e.key === 'kitty-ack') intent.enableTier1()
+      else if (e.key === 'focus-in' && e.kind === 'press') mlCtl.onFocusIn()
+      else if (e.key === 'focus-out' && e.kind === 'press') mlCtl.onFocusOut()
+      else if (e.key === 'm' && e.kind === 'press') mlCtl.toggleLock()
       else if (e.key === 'esc' && e.kind === 'press' && banner) banner = null // dismiss banner, don't quit
       else if ((e.key === 'q' || e.key === 'esc' || e.key === 'ctrl-c') && e.kind === 'press') quit = true
       else if (e.key === 'enter' && banner) quit = true
@@ -122,12 +135,15 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   // one dim line, no prompt.
   if (process.platform === 'darwin') {
     process.stdout.write(
-      `${ESC}[2maim: point with the mouse — shots go to the crosshair · walk: hold right mouse button (or tap W) · fire: click or Space · Q quits${ESC}[0m\n`,
+      `${ESC}[2maim: move mouse (mouse-look) · walk: hold right mouse or W · fire: click or Space · M toggles lock · Q quits${ESC}[0m\n`,
     )
   }
 
   term.enter()
-  term.installExitGuards(() => {})
+  // dispose the mouselock helper on every abnormal exit path (signals /
+  // uncaught) alongside the terminal restore — the OS connection-close restore
+  // is only the backstop, not the plan.
+  term.installExitGuards(() => { mouselock.dispose() })
 
   let seq = 0
   let busySeconds: number | null = null
@@ -193,7 +209,11 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
         moving[id] = p ? Math.hypot(c.pos.x - p.pos.x, c.pos.y - p.pos.y) > 0.01 : false
       }
 
-      renderView(fb, room.map, view, selfId, recoil, { now, moving, pointer })
+      // Mouselock mode hides the OS pointer and pins it — pass pointer:null so
+      // the crosshair renders at screen center (its fallback). Cursor mode
+      // passes the live pointer cell as before.
+      const crosshair = mlCtl.mode === 'mouselock' ? null : pointer
+      renderView(fb, room.map, view, selfId, recoil, { now, moving, pointer: crosshair })
       drawGun(fb, weapon, recoil)
       recoil *= 0.8
 
@@ -215,6 +235,7 @@ export async function runOffline(opts: { name?: string; mute?: boolean; difficul
   }
   process.stdout.off('resize', onResize)
   await listener.close()
+  mouselock.dispose() // normal-completion exit path (signals covered by exit guards)
   term.restore()
   process.exit(0)
 }
