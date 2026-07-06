@@ -14,6 +14,7 @@ import { IntentTracker } from './input/intent.js'
 import { QuitConfirm } from './input/quit.js'
 import { readOsKeyTimings } from './input/os-timings.js'
 import { KeyParser } from './input/parser.js'
+import { shareCard } from './share.js'
 import { createMouselock, MouselockController, type Mouselock } from './mouselock.js'
 import { NetClient } from './net/client.js'
 import { Interpolator } from './net/interp.js'
@@ -252,7 +253,10 @@ export async function runOnline(opts: { name?: string; mute?: boolean; server: s
       const { top, bottom } = hudRows(view, self, viewCols, busySeconds, feed)
       out += `${ESC}[${viewRows + 1};1H${ESC}[0;7m${top}${ESC}[0m`
       out += `${ESC}[${viewRows + 2};1H${bottom[0]}${ESC}[${viewRows + 3};1H${bottom[1]}`
-      if (quitConfirm.armed) out += `${ESC}[2;3H${ESC}[1;7m press again to quit ${ESC}[0m`
+      // The hint is shorter than the banner it replaces and the overlay row is
+      // outside the diff renderer's model, so pad past the longest banner text
+      // to blank any leftover characters (M6).
+      if (quitConfirm.armed) out += `${ESC}[2;3H${ESC}[1;7m press again to quit ${ESC}[0m${' '.repeat(40)}`
       else if (banner) out += `${ESC}[2;3H${ESC}[1;7m ${banner} ${ESC}[0m`
       const fs = finalState()
       if ((scoreboardHeld > 0 || ended || closed) && fs) out += scoreboardOverlay(fs)
@@ -274,6 +278,9 @@ export async function runOnline(opts: { name?: string; mute?: boolean; server: s
   net.leave() // best-effort; harmless if the server already closed us
   mouselock.dispose()
   term.restore()
+  // Share card on the NORMAL screen (post-restore) so it lands in scrollback,
+  // ready to copy into a post. Finished matches only.
+  if (finished && fs) process.stdout.write('\n' + shareCard(fs, selfId, gameMap.id))
   process.exit(0)
 }
 

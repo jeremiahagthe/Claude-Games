@@ -15,6 +15,7 @@ import { readOsKeyTimings } from './input/os-timings.js'
 import { KeyParser } from './input/parser.js'
 import { createMouselock, MouselockController, type Mouselock } from './mouselock.js'
 import { renderView } from './raycast.js'
+import { shareCard } from './share.js'
 import { Sfx } from './sound.js'
 import { TerminalSession } from './terminal.js'
 
@@ -229,7 +230,10 @@ export async function runOffline(
       const { top, bottom } = hudRows(curr, selfId, viewCols, busySeconds, feed)
       out += `${ESC}[${viewRows + 1};1H${ESC}[0;7m${top}${ESC}[0m`
       out += `${ESC}[${viewRows + 2};1H${bottom[0]}${ESC}[${viewRows + 3};1H${bottom[1]}`
-      if (quitConfirm.armed) out += `${ESC}[2;3H${ESC}[1;7m press again to quit ${ESC}[0m`
+      // The hint is shorter than the banner it replaces and the overlay row is
+      // outside the diff renderer's model, so pad past the longest banner text
+      // to blank any leftover characters (M6).
+      if (quitConfirm.armed) out += `${ESC}[2;3H${ESC}[1;7m press again to quit ${ESC}[0m${' '.repeat(40)}`
       else if (banner) out += `${ESC}[2;3H${ESC}[1;7m ${banner} ${ESC}[0m`
       if (scoreboardHeld > 0 || room.finished) out += scoreboardOverlay(room)
       term.write(out)
@@ -248,6 +252,10 @@ export async function runOffline(
   await listener.close()
   mouselock.dispose() // normal-completion exit path (signals covered by exit guards)
   term.restore()
+  // Share card on the NORMAL screen (post-restore) so it lands in scrollback,
+  // ready to copy into a post. Finished matches only — a mid-match quit has no
+  // result worth sharing.
+  if (room.finished) process.stdout.write('\n' + shareCard(room.state, selfId, room.map.id))
   process.exit(0)
 }
 
