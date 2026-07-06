@@ -50,6 +50,53 @@ describe('Predictor', () => {
     expect(withAim.aimOffset).toBeCloseTo(0.2)
     expect(withAim.seq).toBe(1)
   })
+  it('ignores a stale/out-of-order server state instead of rebasing onto it', () => {
+    const pred = new Predictor(player(), MAP)
+    const serverSide = player()
+    const inputs = Array.from({ length: 10 }, (_, i) => makeInput(i + 1, { forward: 1, turn: i % 2 ? 1 : 0 }))
+    for (const i of inputs) pred.applyLocal(i)
+    // server acks the first 8 inputs
+    for (const i of inputs.slice(0, 8)) stepPlayer(serverSide, i, MAP)
+    pred.onServerState(structuredClone(serverSide))
+    const afterFreshAck = structuredClone(pred.self)
+    // a stale/duplicate delivery arrives late, reporting an older ack (seq 3)
+    const staleServerSide = player()
+    for (const i of inputs.slice(0, 3)) stepPlayer(staleServerSide, i, MAP)
+    pred.onServerState(structuredClone(staleServerSide))
+    // self must be completely unaffected by the stale delivery
+    expect(pred.self).toEqual(afterFreshAck)
+    // and must still match the full straight-line sim
+    const expected = player()
+    for (const i of inputs) stepPlayer(expected, i, MAP)
+    expect(pred.self.pos.x).toBeCloseTo(expected.pos.x, 10)
+    expect(pred.self.pos.y).toBeCloseTo(expected.pos.y, 10)
+    expect(pred.self.dir).toBeCloseTo(expected.dir, 10)
+  })
+  it('pending-buffer overflow self-heals once the server ack catches up past the dropped range', () => {
+    const pred = new Predictor(player(), MAP)
+    const inputs = Array.from({ length: 100 }, (_, i) => makeInput(i + 1, { forward: 1, turn: i % 3 === 0 ? 1 : 0 }))
+    // pending buffer caps at 64: applying 100 inputs drops the oldest 36 (seqs 1-36)
+    for (const i of inputs) pred.applyLocal(i)
+    // server has only acked seq 5 so far (far behind the dropped range) — the
+    // rebase is missing inputs 6-36 that the client already discarded, so
+    // divergence from the true full-history sim is expected and allowed here.
+    const ackedTo5 = player()
+    for (const i of inputs.slice(0, 5)) stepPlayer(ackedTo5, i, MAP)
+    pred.onServerState(structuredClone(ackedTo5))
+    const expected = player()
+    for (const i of inputs) stepPlayer(expected, i, MAP)
+    expect(Math.abs(pred.self.pos.x - expected.pos.x)).toBeGreaterThan(1e-6)
+    // server eventually simulates all 100 inputs in order and acks seq 100 —
+    // once the ack is past the dropped range, the pending buffer (which only
+    // ever held already-un-acked inputs) rebases onto the exact server state
+    // with nothing left to replay, converging exactly.
+    const ackedTo100 = player()
+    for (const i of inputs) stepPlayer(ackedTo100, i, MAP)
+    pred.onServerState(structuredClone(ackedTo100))
+    expect(pred.self.pos.x).toBeCloseTo(expected.pos.x, 10)
+    expect(pred.self.pos.y).toBeCloseTo(expected.pos.y, 10)
+    expect(pred.self.dir).toBeCloseTo(expected.dir, 10)
+  })
 })
 
 describe('Interpolator', () => {
