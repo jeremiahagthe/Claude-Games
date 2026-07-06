@@ -129,7 +129,7 @@ OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="
 
 grep -q "ARG:split-window" "$RECORD" || fail "tmux shim did not see split-window"
 grep -q "ARG:-h" "$RECORD" || fail "tmux shim did not see -h"
-grep -qF "ARG:npx -y fragwait@0.1.2" "$RECORD" || fail "tmux shim did not receive the registry cmd"
+grep -qF "ARG:npx -y fragwait@0.1.3" "$RECORD" || fail "tmux shim did not receive the registry cmd"
 echo "$OUT" | grep -q "tmux split" || fail "launcher did not report a tmux split: $OUT"
 echo "PASS: TMUX branch splits with the picked cmd"
 

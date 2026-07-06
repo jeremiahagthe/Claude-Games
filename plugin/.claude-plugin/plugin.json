@@ -1,6 +1,6 @@
 {
   "name": "games",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Terminal games for Claude Code wait time — quick multiplayer matches against other waiting devs, rotating through a growing arcade. Game 1: fragwait, a terminal FPS deathmatch.",
   "author": { "name": "games contributors" },
   "homepage": "https://github.com/jeremiahagthe/Claude-Games",

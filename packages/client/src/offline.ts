@@ -10,6 +10,7 @@ import { drawGun } from './gun.js'
 import { KillFeed, hudRows } from './hud.js'
 import { waitForPress } from './input/dismiss.js'
 import { IntentTracker } from './input/intent.js'
+import { QuitConfirm } from './input/quit.js'
 import { readOsKeyTimings } from './input/os-timings.js'
 import { KeyParser } from './input/parser.js'
 import { createMouselock, MouselockController, type Mouselock } from './mouselock.js'
@@ -70,6 +71,7 @@ export async function runOffline(
   const mouselock = (opts.mouselock ?? createMouselock)()
   const mlCtl = new MouselockController(mouselock, intent, () => performance.now())
   let banner: string | null = null
+  const quitConfirm = new QuitConfirm(() => performance.now())
   let scoreboardHeld = 0
   let quit = false
   let ended = false
@@ -119,9 +121,14 @@ export async function runOffline(
       else if (e.key === 'focus-in' && e.kind === 'press') mlCtl.onFocusIn()
       else if (e.key === 'focus-out' && e.kind === 'press') mlCtl.onFocusOut()
       else if (e.key === 'm' && e.kind === 'press') mlCtl.toggleLock()
-      else if (e.key === 'esc' && e.kind === 'press' && banner) banner = null // dismiss banner, don't quit
-      else if ((e.key === 'q' || e.key === 'esc' || e.key === 'ctrl-c') && e.kind === 'press') quit = true
-      else if (e.key === 'enter' && banner) quit = true
+      else if (e.key === 'ctrl-c' && e.kind === 'press') quit = true // instant escape hatch
+      else if (e.key === 'esc' && e.kind === 'press' && banner && !quitConfirm.armed) banner = null // dismiss banner, don't quit
+      // Feel-12: Q/Esc (and Enter while the banner offers quit & return) arm a
+      // confirm window instead of quitting outright — a second press inside it
+      // quits. Kills the fat-fingered-Q instant match loss (Q is next to W and
+      // the pointer is hidden in mouselock).
+      else if ((e.key === 'q' || e.key === 'esc') && e.kind === 'press') quit = quitConfirm.request()
+      else if (e.key === 'enter' && e.kind === 'press' && banner) quit = quitConfirm.request()
       else if (e.key === 'tab' && e.kind !== 'release') scoreboardHeld = 8 // ~400ms of scoreboard per Tab press
       else intent.onKey(e)
     }
@@ -222,7 +229,8 @@ export async function runOffline(
       const { top, bottom } = hudRows(curr, selfId, viewCols, busySeconds, feed)
       out += `${ESC}[${viewRows + 1};1H${ESC}[0;7m${top}${ESC}[0m`
       out += `${ESC}[${viewRows + 2};1H${bottom[0]}${ESC}[${viewRows + 3};1H${bottom[1]}`
-      if (banner) out += `${ESC}[2;3H${ESC}[1;7m ${banner} ${ESC}[0m`
+      if (quitConfirm.armed) out += `${ESC}[2;3H${ESC}[1;7m press again to quit ${ESC}[0m`
+      else if (banner) out += `${ESC}[2;3H${ESC}[1;7m ${banner} ${ESC}[0m`
       if (scoreboardHeld > 0 || room.finished) out += scoreboardOverlay(room)
       term.write(out)
     }, RENDER_MS)
