@@ -55,14 +55,14 @@ const RELEASE_PER_TICK = 0.3
 // Budget drains through the same TURN_TICK_RAD pipe, so TURN_SPEED still caps
 // the rate. Only active while setAimMode('mouselock'); in cursor mode the delta
 // path is dormant and the cursor-aim block below owns the mouse instead.
-const MOUSE_SENS = 0.035 // rad/cell — the mouse-look sensitivity tunable
+const MOUSE_SENS = 0.055 // rad/cell — the mouse-look sensitivity tunable
 // Per-event delta clamp: swallows pointer teleports (a warp, window re-entry)
 // that would otherwise snap the view by hundreds of cells at once.
 const MOUSE_DX_CLAMP = 8
 // Mouse-fed budget saturation: a stale look backlog is worse than a dropped
 // one, so a mouse contribution never leaves more than this banked. Keyboard tap
 // quanta are exempt (see enqueueTurnQuantum) — they are intentional units.
-const MOUSE_SATURATION_RAD = 0.5
+const MOUSE_SATURATION_RAD = 0.7
 
 // --- Cursor aim (pointer IS the crosshair, active in BOTH tiers) ------------
 // There is no pointer lock in any terminal, so the OS cursor is always visible:
