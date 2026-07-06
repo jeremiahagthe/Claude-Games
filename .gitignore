@@ -8,3 +8,7 @@ dist/
 # python bytecode cache
 __pycache__/
 *.pyc
+
+# user brand assets — kept local by choice
+claude_code_games_profile_pic.png
+claude_code_games_twitter_banner_v2.png

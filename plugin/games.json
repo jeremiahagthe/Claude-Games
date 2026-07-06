@@ -3,7 +3,7 @@
     {
       "id": "fragwait",
       "title": "fragwait — terminal FPS deathmatch",
-      "cmd": "npx -y fragwait@0.1.1"
+      "cmd": "npx -y fragwait@0.1.2"
     }
   ]
 }
