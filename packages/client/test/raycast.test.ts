@@ -87,34 +87,47 @@ describe('crosshair', () => {
     }
   })
 
-  it('draws the crosshair at the pointer cell (cursor aim), not at center', () => {
-    const fb = new FrameBuffer(80, 48)
+  it('feel-8: when the pointer is visible, NO plus is drawn at the pointer cell — the OS pointer is the only cursor', () => {
+    const withPointer = new FrameBuffer(80, 48)
     const [x, y] = [20, 5]
-    renderView(fb, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x, y } })
-    const [cx, cy] = crosshairFb(fb, x, y)
-    expect([cx, cy]).toEqual([19, 9]) // x−1, (y−1)·2+1
-    expectCrosshairAt(fb, cx, cy)
-    // the framebuffer center is no longer the crosshair
-    expect(pixelAt(fb, fb.w >> 1, fb.h >> 1)).not.toEqual([255, 255, 255])
+    renderView(withPointer, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x, y } })
+    const [cx, cy] = crosshairFb(withPointer, x, y)
+    expect([cx, cy]).toEqual([19, 9]) // x−1, (y−1)·2+1 — same aim cell as before
+
+    // The rendered wall/floor pixel at the aim cell must survive untouched:
+    // no white center, no gray arms overwriting it.
+    expect(pixelAt(withPointer, cx, cy)).not.toEqual([255, 255, 255])
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+      expect(pixelAt(withPointer, cx + dx, cy + dy)).not.toEqual([170, 170, 170])
+    }
+    // Root-cause check: the pixel matches a render of the identical scene with
+    // no pointer at all (proving the plus was skipped, not just recolored).
+    const noPointer = new FrameBuffer(80, 48)
+    renderView(noPointer, BOX, mkState(player('me', 10, 3, 0)), 'me')
+    expect(pixelAt(withPointer, cx, cy)).toEqual(pixelAt(noPointer, cx, cy))
   })
 
-  it('clamps the crosshair inside the view when the pointer is over the HUD / off-view', () => {
-    const far = new FrameBuffer(80, 48)
-    renderView(far, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x: 1000, y: 1000 } })
-    expectCrosshairAt(far, far.w - 2, far.h - 2) // clamped to the far corner, plus still inside
-
-    const near = new FrameBuffer(80, 48)
-    renderView(near, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x: -100, y: -100 } })
-    expectCrosshairAt(near, 1, 1) // clamped to the near corner
+  it('feel-8: an off-view pointer still draws no plus, even at its clamped aim cell', () => {
+    const withPointer = new FrameBuffer(80, 48)
+    renderView(withPointer, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x: 1000, y: 1000 } })
+    const noPointer = new FrameBuffer(80, 48)
+    renderView(noPointer, BOX, mkState(player('me', 10, 3, 0)), 'me')
+    // clamped corner cell (far.w-2, far.h-2) matches the no-pointer render exactly
+    expect(pixelAt(withPointer, withPointer.w - 2, withPointer.h - 2))
+      .toEqual(pixelAt(noPointer, noPointer.w - 2, noPointer.h - 2))
   })
 
-  it('muzzle flash blooms at the MOVED crosshair, leaving the dim arms untouched', () => {
-    const fb = new FrameBuffer(80, 48)
+  it('feel-8: muzzle flash still blooms at the pointer aim cell even though no plus is drawn', () => {
+    const noFlash = new FrameBuffer(80, 48)
+    const flash = new FrameBuffer(80, 48)
     const [x, y] = [30, 6]
-    renderView(fb, BOX, mkState(player('me', 10, 3, 0)), 'me', 1, { now: 0, moving: {}, pointer: { x, y } })
-    const [cx, cy] = crosshairFb(fb, x, y)
-    expect(pixelAt(fb, cx, cy)).toEqual([255, 255, 255]) // center: at 255, clamped
-    expect(pixelAt(fb, cx - 1, cy)).toEqual([170, 170, 170]) // arm not washed to white
+    renderView(noFlash, BOX, mkState(player('me', 10, 3, 0)), 'me', 0, { now: 0, moving: {}, pointer: { x, y } })
+    renderView(flash, BOX, mkState(player('me', 10, 3, 0)), 'me', 1, { now: 0, moving: {}, pointer: { x, y } })
+    const [cx, cy] = crosshairFb(flash, x, y)
+    const [nr, ng, nb] = pixelAt(noFlash, cx, cy)
+    const [fr, fg, fb2] = pixelAt(flash, cx, cy)
+    // firing brightens the aim cell relative to the no-flash render
+    expect(fr + fg + fb2).toBeGreaterThan(nr + ng + nb)
   })
 
   it('RENDER_HALF_FOV stays within core AIM_OFFSET_MAX so the aim can always reach the crosshair', () => {

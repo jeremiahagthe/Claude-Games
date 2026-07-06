@@ -55,7 +55,15 @@ const RELEASE_PER_TICK = 0.3
 // only rotates when the cursor pushes past BAND_START into the outer edge band:
 // a linear 0→1 turn axis across the outer (1 − BAND_START) fraction, so a parked
 // edge cursor keeps turning and pulling back inside the band stops it instantly.
-const BAND_START = 0.7
+const BAND_START = 0.85
+// Max magnitude of the mouse turn contribution at the very edge (feel-8: a
+// deliberate lean, not a whip — half the old feel-7 max).
+const EDGE_TURN_MAX = 0.5
+// Per-sample() step cap when the smoothed band value's magnitude is RISING
+// (pointer pushing further into the band): full EDGE_TURN_MAX reached in
+// ~5 samples (≈250ms @ 20Hz) — never an instant cliff. Falling magnitude
+// (pointer pulled back) snaps straight to target — stopping must be instant.
+const BAND_ATTACK_PER_TICK = 0.12
 
 // --- Fire -------------------------------------------------------------------
 // Every space event latches fire for this long. Blaster cooldown is 500ms, so
@@ -92,6 +100,7 @@ export class IntentTracker {
   private turnPending = 0 // signed rad budget: right +, left −; at most one sign live
   private fireUntil = -Infinity
   private smoothed: Record<'forward' | 'strafe', number> = { forward: 0, strafe: 0 }
+  private smoothedBandTurn = 0
 
   // Cursor aim/walk/fire (shared by both tiers). offline.ts routes raw pointer
   // cells + view geometry per event; the sim is 2D, so only x/viewCols feed the
@@ -141,6 +150,7 @@ export class IntentTracker {
     this.turnPending = 0
     this.fireUntil = -Infinity
     this.smoothed = { forward: 0, strafe: 0 }
+    this.smoothedBandTurn = 0
   }
 
   // ---- Cursor aim + walk + fire (shared by both tiers) ----------------------
@@ -180,15 +190,31 @@ export class IntentTracker {
     return Math.max(-1, Math.min(1, (this.lastMouseX - center) / halfWidth))
   }
 
-  // Edge-band view-turn contribution in [-1, 1]: 0 while |aimNorm| ≤ BAND_START,
-  // then linear 0→1 across the outer (1 − BAND_START) fraction toward the edge.
-  // Read from stored state every tick, so a parked edge cursor keeps turning and
-  // pulling back inside the band stops instantly.
-  private mouseTurn(): number {
+  // Edge-band view-turn TARGET in [-EDGE_TURN_MAX, EDGE_TURN_MAX]: 0 while
+  // |aimNorm| ≤ BAND_START, then linear 0→EDGE_TURN_MAX across the outer
+  // (1 − BAND_START) fraction toward the edge. Read from stored state every
+  // tick, so a parked edge cursor keeps turning and pulling back inside the
+  // band stops it (via mouseTurn's instant-release easing) immediately.
+  private mouseTurnTarget(): number {
     const n = this.aimNorm()
     const a = Math.abs(n)
     if (a <= BAND_START) return 0
-    return Math.sign(n) * ((a - BAND_START) / (1 - BAND_START))
+    return Math.sign(n) * EDGE_TURN_MAX * ((a - BAND_START) / (1 - BAND_START))
+  }
+
+  // Advances the smoothed band-turn value toward the current target: at most
+  // BAND_ATTACK_PER_TICK per sample() when the magnitude is rising (a
+  // deliberate lean into the edge), but snapped straight to the target when
+  // the magnitude is falling (pulling back inside the band stops instantly).
+  private mouseTurn(): number {
+    const target = this.mouseTurnTarget()
+    if (Math.abs(target) < Math.abs(this.smoothedBandTurn)) {
+      this.smoothedBandTurn = target
+      return target
+    }
+    const delta = Math.max(-BAND_ATTACK_PER_TICK, Math.min(BAND_ATTACK_PER_TICK, target - this.smoothedBandTurn))
+    this.smoothedBandTurn += delta
+    return this.smoothedBandTurn
   }
 
   onKey(e: KeyEvent): void {

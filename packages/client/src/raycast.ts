@@ -134,11 +134,16 @@ export function renderView(
   const ccy = pointer ? Math.max(1, Math.min(fb.h - 2, (pointer.y - 1) * 2 + 1)) : fb.h >> 1
   // Minimal plus (3x3 footprint, down from the previous +-2 5x5 blob): a
   // full-white center pixel with dimmer gray arms at +-1, so it reads as a
-  // fine aim point instead of a chunky mark.
+  // fine aim point instead of a chunky mark. Feel-8: when the pointer is
+  // visible, it IS the one and only cursor — drawing our own on top of it
+  // just duplicates it, so skip the plus entirely in that case. The fallback
+  // (no pointer seen yet) still draws the center-screen plus as before.
   const center: [number, number] = [ccx, ccy]
-  const arms: Array<[number, number]> = [[ccx - 1, ccy], [ccx + 1, ccy], [ccx, ccy - 1], [ccx, ccy + 1]]
-  fb.set(center[0], center[1], 255, 255, 255)
-  for (const [px, py] of arms) fb.set(px, py, 170, 170, 170)
+  if (!pointer) {
+    const arms: Array<[number, number]> = [[ccx - 1, ccy], [ccx + 1, ccy], [ccx, ccy - 1], [ccx, ccy + 1]]
+    fb.set(center[0], center[1], 255, 255, 255)
+    for (const [px, py] of arms) fb.set(px, py, 170, 170, 170)
+  }
 
   // Only the center point feeds the flash bloom: brightening the dimmer arms
   // by flash*80 pushes them close enough to 255 that 256-color terminals
