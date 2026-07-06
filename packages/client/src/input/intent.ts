@@ -62,16 +62,17 @@ const RELEASE_PER_TICK = 0.3
 // path is dormant and the cursor-aim block below owns the mouse instead.
 // Accelerated sensitivity: rad = dx · (MOUSE_SENS + MOUSE_ACCEL·(|dx|−1)).
 // A 1-cell nudge stays at the fine-aim 0.035 rad (~2°, small enough to walk the
-// crosshair onto a distant bot), while a fast 8-cell swipe reaches 0.056
-// rad/cell (0.448 rad total) for quick 180s. A flat sensitivity can't do both:
+// crosshair onto a distant bot), while a fast 8-cell swipe reaches 0.0595
+// rad/cell (0.476 rad total) for quick 180s. A flat sensitivity can't do both:
 // terminal motion is quantized to whole cells, so raising it coarsens the
 // smallest possible correction at the same time it speeds up flicks.
-// Feel-11b: ACCEL 0.004 → 0.003. The 0.004 value was tuned against a lossy
-// pipe (the old 2.6 rad/s cap + saturation silently dropped part of every fast
-// swipe); feel-11's 5.2 ceiling delivers the banked radians in full, so the
-// same accel played "slightly too fast" — retuned down, fine aim untouched.
+// Feel-11c: ACCEL bisected to 0.0035. The pre-feel-11 0.004 was tuned against
+// a lossy pipe (the 2.6 rad/s cap + saturation dropped part of every fast
+// swipe); the lossless 5.2 ceiling made it read "slightly too fast" in iTerm2,
+// while the 11b retune to 0.003 read "too slow" — the user's band is between.
+// Fine aim (1-cell nudge) is untouched by accel in all of these.
 const MOUSE_SENS = 0.035 // rad/cell at slow speed — the fine-aim tunable
-const MOUSE_ACCEL = 0.003 // extra rad/cell per additional cell of event speed
+const MOUSE_ACCEL = 0.0035 // extra rad/cell per additional cell of event speed
 // Per-event delta clamp: swallows pointer teleports (a warp, window re-entry)
 // that would otherwise snap the view by hundreds of cells at once.
 const MOUSE_DX_CLAMP = 8

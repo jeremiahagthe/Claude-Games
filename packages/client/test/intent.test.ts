@@ -196,15 +196,15 @@ describe('turn precision — tap quanta are exact, conserved, capped', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(0, 12, 80, 24) // baseline
-    tracker.onMouseMotion(8, 12, 80, 24) // dx 8 → 8·(0.035 + 0.003·7) = 0.448 rad pending
+    tracker.onMouseMotion(8, 12, 80, 24) // dx 8 → 8·(0.035 + 0.0035·7) = 0.476 rad pending
     clock.set(50)
-    expect(tracker.sample(1).turn).toBe(1) // full tick drains 0.26, leaving 0.188 pending
+    expect(tracker.sample(1).turn).toBe(1) // full tick drains 0.26, leaving 0.216 pending
     clock.set(60)
-    tracker.onKey({ key: 'left', kind: 'press' }) // zeroes the 0.188 remainder, enqueues -0.06
+    tracker.onKey({ key: 'left', kind: 'press' }) // zeroes the 0.216 remainder, enqueues -0.06
     clock.set(100)
     expect(tracker.sample(2).turn).toBeCloseTo(-TAP_DRAIN, 12)
     clock.set(150)
-    expect(tracker.sample(3).turn).toBe(0) // rightward total stayed 0.26 of the enqueued 0.448
+    expect(tracker.sample(3).turn).toBe(0) // rightward total stayed 0.26 of the enqueued 0.476
   })
 
   it('the pending budget caps at ±0.24 rad: excess taps are dropped, total emitted rotation is the cap', () => {
@@ -847,7 +847,7 @@ describe('mouse fire — real left-button press/release, active in BOTH tiers', 
 
 // Mouselock (feel-9): setAimMode('mouselock') resurrects the feel-6 CS-style
 // delta look. Motion deltas (dx in cells, clamped ±8) feed the SAME shared turn
-// budget the keyboard uses at an accelerated dx·(0.035 + 0.003·(|dx|−1)) rad (feel-11b),
+// budget the keyboard uses at an accelerated dx·(0.035 + 0.0035·(|dx|−1)) rad (feel-11c),
 // saturating the mouse contribution at ±0.6 rad; aimOffset is forced 0 and the cursor-aim edge band
 // contributes nothing. TURN_TICK_RAD = core TURN_SPEED = 0.26 (feel-11).
 const MTICK = TICK_RAD
@@ -883,8 +883,8 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(40, 12, VCOLS, VROWS) // baseline only
     expect(drainRotation(tracker, 1)).toBeCloseTo(0, 12)
-    tracker.onMouseMotion(43, 12, VCOLS, VROWS) // dx = 3 → 3·(0.035 + 0.003·2) = 0.123 rad
-    expect(drainRotation(tracker, 100)).toBeCloseTo(0.123, 12)
+    tracker.onMouseMotion(43, 12, VCOLS, VROWS) // dx = 3 → 3·(0.035 + 0.0035·2) = 0.126 rad
+    expect(drainRotation(tracker, 100)).toBeCloseTo(0.126, 12)
   })
 
   it('clamps a per-event delta to ±8 cells (a teleport can never snap the view)', () => {
@@ -892,8 +892,8 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(40, 12, VCOLS, VROWS)
-    tracker.onMouseMotion(400, 12, VCOLS, VROWS) // dx = 360, clamped to 8 → 8·(0.035 + 0.003·7) = 0.448 rad
-    expect(drainRotation(tracker, 1)).toBeCloseTo(0.448, 12)
+    tracker.onMouseMotion(400, 12, VCOLS, VROWS) // dx = 360, clamped to 8 → 8·(0.035 + 0.0035·7) = 0.476 rad
+    expect(drainRotation(tracker, 1)).toBeCloseTo(0.476, 12)
   })
 
   it('saturates the mouse contribution at ±0.6 rad (a stale look backlog is dropped)', () => {
@@ -901,7 +901,7 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(0, 12, VCOLS, VROWS) // baseline
-    // three +8 deltas = 1.344 rad enqueued, saturated to 0.6 before any drain
+    // three +8 deltas = 1.428 rad enqueued, saturated to 0.6 before any drain
     for (let i = 1; i <= 3; i++) tracker.onMouseMotion(8 * i, 12, VCOLS, VROWS)
     expect(drainRotation(tracker, 1)).toBeCloseTo(0.6, 12)
   })
@@ -911,8 +911,8 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(40, 12, VCOLS, VROWS)
-    tracker.onMouseMotion(36, 12, VCOLS, VROWS) // dx = -4 → -4·(0.035 + 0.003·3) = -0.176 rad
-    expect(drainRotation(tracker, 1)).toBeCloseTo(-0.176, 12)
+    tracker.onMouseMotion(36, 12, VCOLS, VROWS) // dx = -4 → -4·(0.035 + 0.0035·3) = -0.182 rad
+    expect(drainRotation(tracker, 1)).toBeCloseTo(-0.182, 12)
   })
 
   it('a keyboard tap ADDS on top of a mouse-inflated budget past the ±0.24 cap (feel-6 property)', () => {
@@ -920,9 +920,9 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(0, 12, VCOLS, VROWS)
-    tracker.onMouseMotion(8, 12, VCOLS, VROWS) // +0.448 (past the 0.24 keyboard cap)
+    tracker.onMouseMotion(8, 12, VCOLS, VROWS) // +0.476 (past the 0.24 keyboard cap)
     tracker.onKey({ key: 'right', kind: 'press' }) // +0.06 tap on top, not clamped down
-    expect(drainRotation(tracker, 1)).toBeCloseTo(0.448 + 0.06, 12)
+    expect(drainRotation(tracker, 1)).toBeCloseTo(0.476 + 0.06, 12)
   })
 
   it('keyboard-only turn stays bit-identical: a lone tap still drains exactly one quantum', () => {
@@ -943,8 +943,8 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     tracker.onMouseMotion(60, 12, VCOLS, VROWS) // in window: lastX→60, but nothing enqueued
     expect(drainRotation(tracker, 1)).toBeCloseTo(0, 12)
     clock.set(100)
-    tracker.onMouseMotion(63, 12, VCOLS, VROWS) // window over: dx from 60 (not 40) = 3 → 0.123
-    expect(drainRotation(tracker, 100)).toBeCloseTo(0.123, 12)
+    tracker.onMouseMotion(63, 12, VCOLS, VROWS) // window over: dx from 60 (not 40) = 3 → 0.126
+    expect(drainRotation(tracker, 100)).toBeCloseTo(0.126, 12)
   })
 
   it('a mode switch clears the delta baseline so no stale jump is replayed', () => {
@@ -952,11 +952,11 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(40, 12, VCOLS, VROWS)
-    tracker.onMouseMotion(48, 12, VCOLS, VROWS) // +0.448 pending
+    tracker.onMouseMotion(48, 12, VCOLS, VROWS) // +0.476 pending
     tracker.setAimMode('cursor')
     tracker.setAimMode('mouselock') // clears lastX
     tracker.onMouseMotion(1000, 12, VCOLS, VROWS) // baseline again — must NOT add a huge delta
-    expect(drainRotation(tracker, 1)).toBeCloseTo(0.448, 12) // only the pre-switch delta remains
+    expect(drainRotation(tracker, 1)).toBeCloseTo(0.476, 12) // only the pre-switch delta remains
   })
 
   it('resetTransient clears the delta budget and baseline', () => {
@@ -964,7 +964,7 @@ describe('mouselock mode — CS-style relative delta look (feel-9)', () => {
     const tracker = mkTracker(clock)
     tracker.setAimMode('mouselock')
     tracker.onMouseMotion(40, 12, VCOLS, VROWS)
-    tracker.onMouseMotion(48, 12, VCOLS, VROWS) // +0.448 pending
+    tracker.onMouseMotion(48, 12, VCOLS, VROWS) // +0.476 pending
     tracker.resetTransient()
     tracker.onMouseMotion(1000, 12, VCOLS, VROWS) // baseline (no delta)
     expect(drainRotation(tracker, 1)).toBeCloseTo(0, 12) // budget wiped, no stale jump
