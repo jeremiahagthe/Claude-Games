@@ -55,14 +55,22 @@ const RELEASE_PER_TICK = 0.3
 // Budget drains through the same TURN_TICK_RAD pipe, so TURN_SPEED still caps
 // the rate. Only active while setAimMode('mouselock'); in cursor mode the delta
 // path is dormant and the cursor-aim block below owns the mouse instead.
-const MOUSE_SENS = 0.055 // rad/cell — the mouse-look sensitivity tunable
+// Accelerated sensitivity: rad = dx · (MOUSE_SENS + MOUSE_ACCEL·(|dx|−1)).
+// A 1-cell nudge stays at the fine-aim 0.035 rad (~2°, small enough to walk the
+// crosshair onto a distant bot), while a fast 8-cell swipe reaches 0.063
+// rad/cell (0.504 rad total) for quick 180s. A flat sensitivity can't do both:
+// terminal motion is quantized to whole cells, so raising it coarsens the
+// smallest possible correction at the same time it speeds up flicks.
+const MOUSE_SENS = 0.035 // rad/cell at slow speed — the fine-aim tunable
+const MOUSE_ACCEL = 0.004 // extra rad/cell per additional cell of event speed
 // Per-event delta clamp: swallows pointer teleports (a warp, window re-entry)
 // that would otherwise snap the view by hundreds of cells at once.
 const MOUSE_DX_CLAMP = 8
 // Mouse-fed budget saturation: a stale look backlog is worse than a dropped
-// one, so a mouse contribution never leaves more than this banked. Keyboard tap
+// one, so a mouse contribution never leaves more than this banked (the sim
+// drains 0.13 rad/tick, so this caps the replay tail at ~230ms). Keyboard tap
 // quanta are exempt (see enqueueTurnQuantum) — they are intentional units.
-const MOUSE_SATURATION_RAD = 0.7
+const MOUSE_SATURATION_RAD = 0.6
 
 // --- Cursor aim (pointer IS the crosshair, active in BOTH tiers) ------------
 // There is no pointer lock in any terminal, so the OS cursor is always visible:
@@ -229,7 +237,8 @@ export class IntentTracker {
   }
 
   // Mouselock relative-look delta: first event after a reset only stores the
-  // baseline; later events add dx·MOUSE_SENS (dx clamped ±MOUSE_DX_CLAMP) to the
+  // baseline; later events add the accelerated dx·(MOUSE_SENS + MOUSE_ACCEL·
+  // (|dx|−1)) (dx clamped ±MOUSE_DX_CLAMP) to the
   // shared turn budget, saturating the mouse contribution at ±MOUSE_SATURATION_RAD.
   // During the post-warp ignore window, lastX still advances but nothing is
   // enqueued (kills the warp-jump misread + any in-flight-event race).
@@ -238,7 +247,8 @@ export class IntentTracker {
     this.mouselockLastX = x
     if (prev === null || this.now() < this.ignoreDeltasUntilMs) return
     const dx = Math.max(-MOUSE_DX_CLAMP, Math.min(MOUSE_DX_CLAMP, x - prev))
-    const next = this.turnPending + dx * MOUSE_SENS
+    const radPerCell = MOUSE_SENS + MOUSE_ACCEL * (Math.abs(dx) - 1)
+    const next = this.turnPending + dx * radPerCell
     this.turnPending = Math.max(-MOUSE_SATURATION_RAD, Math.min(MOUSE_SATURATION_RAD, next))
   }
 
