@@ -1,0 +1,14 @@
+{
+  "name": "fragwait-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "MATCH", "class_name": "MatchDO" },
+      { "name": "LOBBY", "class_name": "LobbyDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["MatchDO", "LobbyDO"] }
+  ]
+}

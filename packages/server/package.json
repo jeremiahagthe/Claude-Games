@@ -1,0 +1,17 @@
+{
+  "name": "@fragwait/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": { "@fragwait/core": "0.1.0" },
+  "devDependencies": {
+    "wrangler": "4.107.0",
+    "@cloudflare/workers-types": "5.20260706.1"
+  }
+}
