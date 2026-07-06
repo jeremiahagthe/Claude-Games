@@ -12,7 +12,10 @@ export interface CliOpts {
 }
 
 export function parseArgs(argv: string[]): CliOpts {
-  const opts: CliOpts = { mode: 'play', offline: false, mute: false, difficulty: 'normal' }
+  // Default difficulty is 'easy', matching the online backfill bots (72058a7):
+  // feel-gating found normal's 0.3–0.4 skills near-hard in practice. Harder
+  // bots are an explicit opt-in via --difficulty.
+  const opts: CliOpts = { mode: 'play', offline: false, mute: false, difficulty: 'easy' }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === 'doctor') opts.mode = 'doctor'

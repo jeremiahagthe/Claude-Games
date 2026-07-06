@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { parseArgs } from '../src/cliArgs.js'
 
 describe('parseArgs --difficulty', () => {
-  it('defaults to normal when not passed', () => {
-    expect(parseArgs([]).difficulty).toBe('normal')
-    expect(parseArgs(['--offline']).difficulty).toBe('normal')
+  // Feel-11b: default is 'easy', matching the online backfill bots (72058a7) —
+  // feel-gating found normal's 0.3–0.4 skills near-hard in practice.
+  it('defaults to easy when not passed', () => {
+    expect(parseArgs([]).difficulty).toBe('easy')
+    expect(parseArgs(['--offline']).difficulty).toBe('easy')
   })
   it('accepts each valid difficulty value', () => {
     expect(parseArgs(['--difficulty', 'easy']).difficulty).toBe('easy')
