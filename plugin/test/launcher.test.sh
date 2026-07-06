@@ -27,7 +27,7 @@ cat > "$SHIMS/tmux" <<'EOF'
   echo "ARGC:$#"
   for a in "$@"; do printf 'ARG:%s\n' "$a"; done
 } >> "${TMUX_RECORD_FILE:?TMUX_RECORD_FILE not set}"
-exit 0
+exit "${TMUX_EXIT:-0}"
 EOF
 
 cat > "$SHIMS/osascript" <<'EOF'
@@ -192,5 +192,65 @@ echo "$OUT" | grep -q "new Terminal window" || fail "did not fall back to Termin
 echo "$OUT" | grep -q "tip: install iTerm2" || fail "missing the iTerm2 install tip line: $OUT"
 grep -q 'tell application "Terminal"' "$RECORD" || fail "AppleScript missing Terminal tell block"
 echo "PASS: Terminal.app fallback emits the iTerm2 tip line"
+
+# ------------------------------------------------------------------------
+# Test 7: rotation state does NOT get burned by a failed launch attempt.
+# tmux is present (TMUX set) but the shim is made to fail (exit 1), and
+# uname is faked to something the case statement doesn't match, so no
+# Darwin/Linux/Windows branch fires either -- the run necessarily falls all
+# the way through to the manual-instructions fallback. That fallback still
+# counts as a "surface chosen" (the user got a runnable command), so the
+# rotation slot must advance exactly once, not zero times (old bug: state
+# was burned by the failed tmux attempt alone) and not twice (once for the
+# failed tmux attempt, once for the fallback).
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cat > "$T_ROOT/games.json" <<'JSON'
+{"games":[
+  {"id":"alpha","title":"Alpha Game","cmd":"echo alpha"},
+  {"id":"bravo","title":"Bravo Game","cmd":"echo bravo"},
+  {"id":"charlie","title":"Charlie Game","cmd":"echo charlie"}
+]}
+JSON
+
+RECORD="$WORK/tmux_fail_fallthrough.txt"
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  TMUX_EXIT=1 FAKE_UNAME="PlanNine" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+
+grep -q "ARG:split-window" "$RECORD" || fail "tmux shim (rigged to fail) was never invoked: $(cat "$RECORD")"
+echo "$OUT" | grep -q "could not open a terminal automatically" || fail "expected fall-through to manual fallback, got: $OUT"
+STATE=$(cat "$T_HOME/.fragwait/rotation.json")
+echo "$STATE" | grep -q '"next":1' || fail "rotation state should have advanced by exactly 1 despite failed tmux attempt: $STATE"
+echo "PASS: failed tmux launch falls through and rotation still advances exactly +1 (no double-advance, no burn)"
+
+# ------------------------------------------------------------------------
+# Test 8: genuinely no-advance path -- a picked registry entry with no cmd
+# exits before any launch surface is even attempted, so rotation.json must
+# be left completely untouched (not just "advanced by 0" -- literally
+# unwritten). This is the one pre-launch guard that can't reach a launch
+# surface at all, unlike every post-pick launch path, which all eventually
+# terminate in the always-succeeding manual-instructions fallback.
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cat > "$T_ROOT/games.json" <<'JSON'
+{"games":[
+  {"id":"alpha","title":"Alpha Game"},
+  {"id":"bravo","title":"Bravo Game","cmd":"echo bravo"}
+]}
+JSON
+mkdir -p "$T_HOME/.fragwait"
+echo '{"next":0}' > "$T_HOME/.fragwait/rotation.json"
+
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$WORK/tmux_nocmd.txt" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+
+echo "$OUT" | grep -q "nothing to launch" || fail "expected the no-cmd guard message, got: $OUT"
+STATE=$(cat "$T_HOME/.fragwait/rotation.json")
+[ "$STATE" = '{"next":0}' ] || fail "rotation state must be untouched when the picked entry has no cmd, got: $STATE"
+echo "PASS: registry entry with no cmd leaves rotation state completely untouched"
 
 echo "PASS: games-launch rotation + terminal-surface detection all behave"
