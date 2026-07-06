@@ -12,3 +12,8 @@ __pycache__/
 # user brand assets — kept local by choice
 claude_code_games_profile_pic.png
 claude_code_games_twitter_banner_v2.png
+
+# local agent tooling (remotion skill install)
+.agents/
+.claude/
+skills-lock.json
