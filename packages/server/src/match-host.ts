@@ -1,7 +1,7 @@
 import {
   BotBrain, DIFFICULTY_SKILLS, MatchRoom, MAPS, MAX_PLAYERS, MIN_COMBATANTS, mulberry32,
   parseClientMsg, randomHandle, type ServerMsg,
-} from '@fragwait/core'
+} from 'fragwait-core'
 
 // Online backfill bots are placeholders for humans, not the opposition: they
 // must be beatable by a first-time player, so they draw from the easy tier

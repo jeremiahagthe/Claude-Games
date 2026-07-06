@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { makeInput, parseMap, stepPlayer } from '@fragwait/core'
-import type { MatchState, PlayerState } from '@fragwait/core'
+import { makeInput, parseMap, stepPlayer } from 'fragwait-core'
+import type { MatchState, PlayerState } from 'fragwait-core'
 import { Interpolator } from '../src/net/interp.js'
 import { Predictor } from '../src/net/predictor.js'
 

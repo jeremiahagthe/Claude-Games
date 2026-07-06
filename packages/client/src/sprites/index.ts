@@ -1,4 +1,4 @@
-import { BLASTER_COOLDOWN_TICKS, wrapAngle, type Vec2 } from '@fragwait/core'
+import { BLASTER_COOLDOWN_TICKS, wrapAngle, type Vec2 } from 'fragwait-core'
 import { SPRITE_FRAMES, FRAME_W, FRAME_H, PALETTE, type SpriteDir } from './gunner-data.js'
 
 export { SPRITE_FRAMES, FRAME_W, FRAME_H, PALETTE }

@@ -1,4 +1,4 @@
-import { parseServerMsg, type MatchState, type PlayerInput } from '@fragwait/core'
+import { parseServerMsg, type MatchState, type PlayerInput } from 'fragwait-core'
 import { WebSocket, type RawData } from 'ws'
 
 export interface NetHandlers {

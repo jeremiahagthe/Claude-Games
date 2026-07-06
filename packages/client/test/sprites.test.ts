@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BLASTER_COOLDOWN_TICKS, type Vec2 } from '@fragwait/core'
+import { BLASTER_COOLDOWN_TICKS, type Vec2 } from 'fragwait-core'
 import { SPRITE_FRAMES, WALK_PERIOD_MS, pickSpriteDirection, selectFrame } from '../src/sprites/index.js'
 
 const P = (x: number, y: number): Vec2 => ({ x, y })

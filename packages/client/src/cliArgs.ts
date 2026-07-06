@@ -1,4 +1,4 @@
-import type { Difficulty } from '@fragwait/core'
+import type { Difficulty } from 'fragwait-core'
 
 const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard']
 

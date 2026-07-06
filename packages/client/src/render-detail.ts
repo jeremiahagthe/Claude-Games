@@ -1,4 +1,4 @@
-import { fnv1a } from '@fragwait/core'
+import { fnv1a } from 'fragwait-core'
 import type { FrameBuffer } from './framebuffer.js'
 import { FRAME_W, FRAME_H, PALETTE } from './sprites/index.js'
 

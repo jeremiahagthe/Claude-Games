@@ -1,7 +1,7 @@
 import {
   BLASTER_COOLDOWN_TICKS, BotBrain, DIFFICULTY_SKILLS, MatchRoom, MIN_COMBATANTS, TICK_MS, handleFromSeed, MAPS,
   randomHandle, mulberry32, wrapAngle, type Difficulty, type MatchState, type PlayerState,
-} from '@fragwait/core'
+} from 'fragwait-core'
 import { hostname } from 'node:os'
 import { detectColorMode, viewSize } from './caps.js'
 import { busyElapsedSeconds, startClaudeListener } from './claude.js'

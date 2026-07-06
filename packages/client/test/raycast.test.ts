@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { AIM_OFFSET_MAX, parseMap } from '@fragwait/core'
-import type { MatchState, PlayerState } from '@fragwait/core'
+import { AIM_OFFSET_MAX, parseMap } from 'fragwait-core'
+import type { MatchState, PlayerState } from 'fragwait-core'
 import { FrameBuffer } from '../src/framebuffer.js'
 import { RENDER_HALF_FOV, backgroundColorAt, renderView } from '../src/raycast.js'
 

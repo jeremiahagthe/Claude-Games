@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_PLAYERS, MIN_COMBATANTS, parseServerMsg } from '@fragwait/core'
+import { MAX_PLAYERS, MIN_COMBATANTS, parseServerMsg } from 'fragwait-core'
 import { MatchHost, type ClientConn } from '../src/match-host.js'
 
 function conn(): ClientConn & { sent: string[] } {

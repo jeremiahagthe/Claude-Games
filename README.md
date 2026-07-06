@@ -130,12 +130,9 @@ Then point clients at it with `FRAGWAIT_SERVER=https://your-worker.workers.dev`
 
 ## Publishing
 
-`fragwait` and `@fragwait/core` are npm workspaces, versioned together
-(currently `0.1.0`). `@fragwait/core` publishes under the `@fragwait`
-scope, which requires either an npm org named `fragwait` or renaming the
-package to an unscoped name (e.g. `fragwait-core`) before first publish —
-a one-line change across two `package.json` files plus the `fragwait`
-client's dependency. Publishing itself (`npm publish`) is a manual,
+`fragwait` and `fragwait-core` are npm workspaces, versioned together
+(currently `0.1.0`). `fragwait-core` publishes as an unscoped package —
+no npm org is required. Publishing itself (`npm publish`) is a manual,
 account-holder decision — this repo only ships dry-run-verified tarballs.
 
 ## License

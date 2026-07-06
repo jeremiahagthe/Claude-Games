@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_PLAYERS } from '@fragwait/core'
+import { MAX_PLAYERS } from 'fragwait-core'
 import { LobbyRegistry } from '../src/lobby-logic.js'
 
 describe('LobbyRegistry', () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { MatchState, PlayerState } from '@fragwait/core'
+import type { MatchState, PlayerState } from 'fragwait-core'
 import { NetClient, type WebSocketFactory } from '../src/net/client.js'
 
 // Minimal MatchState the server would send in `welcome`. mapId must be a real

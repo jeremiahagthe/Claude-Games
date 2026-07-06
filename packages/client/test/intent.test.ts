@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { PlayerInput } from '@fragwait/core'
+import type { PlayerInput } from 'fragwait-core'
 import { IntentTracker } from '../src/input/intent.js'
 import { RENDER_HALF_FOV } from '../src/raycast.js'
 import type { KeyEvent } from '../src/input/parser.js'

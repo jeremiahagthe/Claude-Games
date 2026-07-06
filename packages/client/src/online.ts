@@ -2,7 +2,7 @@ import {
   BLASTER_COOLDOWN_TICKS, INPUT_BATCH_MS, INTERP_DELAY_MS, TICK_MS,
   handleFromSeed, mapById, quantizeInput, sanitizeHandle, wrapAngle,
   type GameMap, type KillEvent, type MatchState, type PlayerInput, type PlayerState,
-} from '@fragwait/core'
+} from 'fragwait-core'
 import { hostname } from 'node:os'
 import { detectColorMode, viewSize } from './caps.js'
 import { busyElapsedSeconds, startClaudeListener } from './claude.js'

@@ -1,4 +1,4 @@
-import { makeInput, type PlayerInput } from '@fragwait/core'
+import { makeInput, type PlayerInput } from 'fragwait-core'
 import { RENDER_HALF_FOV } from '../raycast.js'
 import { FACTORY_TIMINGS, type OsKeyTimings } from './os-timings.js'
 import type { KeyEvent } from './parser.js'

@@ -1,4 +1,4 @@
-import { type GameMap, type MatchState, fnv1a, isWall, wrapAngle, MAX_WALL_DIST } from '@fragwait/core'
+import { type GameMap, type MatchState, fnv1a, isWall, wrapAngle, MAX_WALL_DIST } from 'fragwait-core'
 import type { FrameBuffer } from './framebuffer.js'
 import { applyMuzzleFlash, backgroundColorAt, brickShade, drawSprite, wallBaseColor } from './render-detail.js'
 import { SPRITE_FRAMES, pickSpriteDirection, selectFrame } from './sprites/index.js'

@@ -1,4 +1,4 @@
-import { wrapAngle, type MatchState } from '@fragwait/core'
+import { wrapAngle, type MatchState } from 'fragwait-core'
 
 // Snapshot buffer + sampling for remote-entity rendering. Snapshots arrive at
 // the server tick rate (20Hz); sample() is called once per render frame

@@ -1,4 +1,4 @@
-import { MAX_HP, TICK_RATE, type KillEvent, type MatchState } from '@fragwait/core'
+import { MAX_HP, TICK_RATE, type KillEvent, type MatchState } from 'fragwait-core'
 
 function pad(s: string, w: number): string {
   return s.length > w ? s.slice(0, w) : s + ' '.repeat(w - s.length)

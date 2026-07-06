@@ -5,7 +5,7 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "vitest run",
-    "build": "npm run build -w @fragwait/core && npm run build --workspaces --if-present"
+    "build": "npm run build -w fragwait-core && npm run build --workspaces --if-present"
   },
   "devDependencies": {
     "typescript": "6.0.3",

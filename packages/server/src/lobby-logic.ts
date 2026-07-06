@@ -1,4 +1,4 @@
-import { MATCH_TICKS, MAX_PLAYERS, TICK_RATE } from '@fragwait/core'
+import { MATCH_TICKS, MAX_PLAYERS, TICK_RATE } from 'fragwait-core'
 
 const TTL_MS = (MATCH_TICKS / TICK_RATE) * 1000 + 30_000
 

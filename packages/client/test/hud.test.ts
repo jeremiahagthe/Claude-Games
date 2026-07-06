@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MatchRoom, mapById } from '@fragwait/core'
+import { MatchRoom, mapById } from 'fragwait-core'
 import { KillFeed, hudRows } from '../src/hud.js'
 
 function room(): MatchRoom {

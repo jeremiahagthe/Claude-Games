@@ -1,4 +1,4 @@
-import { parseClientMsg, TICK_MS } from '@fragwait/core'
+import { parseClientMsg, TICK_MS } from 'fragwait-core'
 import { MatchHost } from './match-host.js'
 
 export class MatchDO implements DurableObject {

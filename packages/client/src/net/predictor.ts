@@ -1,4 +1,4 @@
-import { stepPlayer, type GameMap, type PlayerInput, type PlayerState } from '@fragwait/core'
+import { stepPlayer, type GameMap, type PlayerInput, type PlayerState } from 'fragwait-core'
 
 // Client-side prediction + server reconciliation for the local player.
 //
