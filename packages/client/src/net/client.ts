@@ -46,12 +46,17 @@ export class NetClient {
       // stays attached after `welcome` resolves so live snaps/end keep flowing
       // through the same handlers.
       const client = new NetClient(ws)
+      // Set once welcome resolves the attempt. Gates onClose so a pre-welcome
+      // close — including the full-retry close below — never reaches the
+      // caller; only a close of an established session should.
+      let welcomed = false
       const outcome = await new Promise<'ok' | 'full' | 'error'>((resolve) => {
         ws.on('open', () => ws.send(JSON.stringify({ t: 'join', handle })))
         ws.on('message', (data: RawData) => {
           const msg = parseServerMsg(data.toString())
           if (!msg) return
           if (msg.t === 'welcome') {
+            welcomed = true
             handlers.onWelcome(msg.id, msg.state)
             resolve('ok')
           } else if (msg.t === 'snap') handlers.onSnap(msg.state)
@@ -60,7 +65,7 @@ export class NetClient {
         ws.on('close', (_code: number, reason: Buffer) => {
           const why = reason.toString()
           resolve(why === 'full' ? 'full' : 'error')
-          handlers.onClose(why)
+          if (welcomed) handlers.onClose(why)
         })
         ws.on('error', () => resolve('error'))
       })

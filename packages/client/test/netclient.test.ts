@@ -39,6 +39,8 @@ class FakeWs {
     }, 0)
   }
   close(): void { this.emit('close', 1000, Buffer.from('')) }
+  // Lets a test simulate the server closing an already-established session.
+  triggerClose(code: number, reason: string): void { this.emit('close', code, Buffer.from(reason)) }
   private emit(ev: string, ...args: unknown[]): void {
     for (const cb of this.handlers[ev] ?? []) cb(...args)
   }
@@ -78,20 +80,33 @@ describe('NetClient.connect', () => {
     expect(client).toBeInstanceOf(NetClient)
   })
 
-  it('retries once with exclude when the first match closes 1013 "full"', async () => {
+  it('retries once with exclude when the first match closes 1013 "full", without firing onClose for that retry close', async () => {
     const bodies: unknown[] = []
     let call = 0
     vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)))
       return { ok: true, json: async () => ({ matchId: call++ === 0 ? 'full1' : 'open2' }) } as Response
     })
+    const created: FakeWs[] = []
     const factory: WebSocketFactory = (url) => {
       const id = url.includes('full1') ? 'closeFull' : 'welcome'
-      return new FakeWs(url, id) as unknown as import('ws').WebSocket
+      const ws = new FakeWs(url, id)
+      created.push(ws)
+      return ws as unknown as import('ws').WebSocket
     }
-    const client = await NetClient.connect('http://s', 'p', noopHandlers, 4000, factory)
+    const closes: string[] = []
+    const client = await NetClient.connect('http://s', 'p', {
+      ...noopHandlers,
+      onClose(reason) { closes.push(reason) },
+    }, 4000, factory)
     expect(bodies).toEqual([{}, { exclude: 'full1' }]) // second join excludes the full match
     expect(client).toBeInstanceOf(NetClient)
+    // The pre-welcome "full" close that drove the retry must not poison a
+    // caller's `closed` state before the game loop even starts.
+    expect(closes).toEqual([])
+
+    created[1]!.triggerClose(1000, 'bye')
+    expect(closes).toEqual(['bye']) // fires exactly once, for the established session's close
   })
 
   it('throws when /api/join is not ok', async () => {
