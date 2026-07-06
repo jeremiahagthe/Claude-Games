@@ -21,7 +21,6 @@ so a crash can never leave the pointer hidden.
 """
 
 import ctypes
-import ctypes.util
 import signal
 import sys
 

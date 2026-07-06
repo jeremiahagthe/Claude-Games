@@ -107,10 +107,11 @@ function fakeLock(available = true) {
 
 function fakeIntent() {
   const modes: string[] = []
-  const state = { ignoredUntil: -1 }
+  const state = { ignoredUntil: -1, mouseButtonsReleased: 0 }
   const intent: MouselockIntent = {
     setAimMode: (m) => modes.push(m),
     ignoreDeltasUntil: (n) => { state.ignoredUntil = n },
+    releaseMouseButtons: () => { state.mouseButtonsReleased++ },
   }
   return { intent, modes, state }
 }
@@ -183,6 +184,7 @@ describe('MouselockController', () => {
     c.onFocusOut()
     expect(l.calls).toEqual(['show'])
     expect(c.mode).toBe('cursor')
+    expect(i.state.mouseButtonsReleased).toBe(1) // held walk/fire can never see a release while unfocused
     // a mouse event while unfocused must not re-engage
     c.onMouseEvent(30, 10)
     expect(c.mode).toBe('cursor')

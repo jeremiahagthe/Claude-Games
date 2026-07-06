@@ -92,6 +92,7 @@ export const WARP_IGNORE_MS = 60
 export interface MouselockIntent {
   setAimMode(mode: 'mouselock' | 'cursor'): void
   ignoreDeltasUntil(nowMs: number): void
+  releaseMouseButtons(): void
 }
 
 // The aim-mode state machine (extracted from offline.ts so it is unit-testable).
@@ -140,6 +141,9 @@ export class MouselockController {
     this.focused = false
     if (this.engaged) this.disengage()
     else this.lock.show()
+    // Button-release events can never arrive while the terminal is unfocused
+    // (e.g. after Cmd-Tab), so held walk/fire would otherwise stick on.
+    this.intent.releaseMouseButtons()
   }
 
   // M/m toggle. Disabling shows the cursor and drops to cursor mode; enabling

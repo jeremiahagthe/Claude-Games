@@ -184,6 +184,15 @@ export class IntentTracker {
     this.clearDeltaState()
   }
 
+  // Forces both mouse-button hold states off without touching anything else
+  // (movement latch, keyboard state, aim). Called when the window loses focus:
+  // the terminal can never deliver the matching button-release event, so
+  // walkHeld/mouseFireHeld would otherwise stick on until the next press.
+  releaseMouseButtons(): void {
+    this.walkHeld = false
+    this.mouseFireHeld = false
+  }
+
   // ---- Aim mode (mouselock vs cursor) ---------------------------------------
 
   // Switches the aim mode. Any switch clears the delta-look state so no stale

@@ -403,6 +403,43 @@ describe('resetTransient — respawn/tier-switch hygiene', () => {
   })
 })
 
+describe('releaseMouseButtons — focus-loss safety valve (button releases can never arrive)', () => {
+  it('drops a held right-button walk to the latch/binary forward source', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('right', 'press')
+    tracker.sample(1)
+    expect(tracker.sample(2).forward).toBe(1) // walkHeld forces forward on (eased to full)
+    tracker.releaseMouseButtons()
+    // walkHeld cleared, so the ease target drops to the latch (0, untouched by
+    // keyboard) — the smoothed value heads toward 0 rather than staying pinned at 1.
+    expect(tracker.sample(3).forward).toBeLessThan(1)
+    for (let i = 4; i < 20 && tracker.sample(i).forward > 0; i++) { /* drain the ease tail */ }
+    expect(tracker.sample(20).forward).toBe(0)
+  })
+
+  it('drops a held left-button fire to false', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onMouseButton('left', 'press')
+    expect(tracker.sample(1).fire).toBe(true) // mouseFireHeld forces fire on
+    tracker.releaseMouseButtons()
+    expect(tracker.sample(2).fire).toBe(false)
+  })
+
+  it('does not touch the movement latch or keyboard state', () => {
+    const clock = mkClock()
+    const tracker = mkTracker(clock)
+    tracker.onKey({ key: 'w', kind: 'press' })
+    tracker.sample(1)
+    tracker.sample(2) // eased to full
+    tracker.onMouseButton('right', 'press')
+    tracker.releaseMouseButtons()
+    // 'w' is still physically held, so forward should remain driven by it.
+    expect(tracker.sample(3).forward).toBeGreaterThan(0)
+  })
+})
+
 describe('tier 1 (kitty) — real press/repeat/release', () => {
   it('movement is exactly binary: held = 1 regardless of repeats, release = instant 0', () => {
     const clock = mkClock()
