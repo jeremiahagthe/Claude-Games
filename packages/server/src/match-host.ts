@@ -1,7 +1,12 @@
 import {
-  BotBrain, MatchRoom, MAPS, MAX_PLAYERS, MIN_COMBATANTS, mulberry32,
+  BotBrain, DIFFICULTY_SKILLS, MatchRoom, MAPS, MAX_PLAYERS, MIN_COMBATANTS, mulberry32,
   parseClientMsg, randomHandle, type ServerMsg,
 } from '@fragwait/core'
+
+// Online backfill bots are placeholders for humans, not the opposition: they
+// must be beatable by a first-time player, so they draw from the easy tier
+// (BotBrain's default 0.45 sits between offline "normal" and "hard").
+const BOT_SKILLS = DIFFICULTY_SKILLS.easy
 
 export interface ClientConn { send(data: string): void; close(): void }
 
@@ -77,7 +82,7 @@ export class MatchHost {
     while (this.room.playerCount() < target) {
       const id = `b${this.nextId++}`
       this.room.addPlayer(id, `${randomHandle(this.rng)}·synth`, true)
-      this.brains.set(id, new BotBrain(id, Math.floor(this.rng() * 2 ** 31)))
+      this.brains.set(id, new BotBrain(id, Math.floor(this.rng() * 2 ** 31), BOT_SKILLS[this.brains.size % BOT_SKILLS.length]!))
     }
   }
 }
