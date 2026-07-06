@@ -2,7 +2,7 @@ import type { CliOpts } from './cli.js'
 import { runOffline } from './offline.js'
 import { runOnline } from './online.js'
 
-export const DEFAULT_SERVER = 'http://127.0.0.1:8787' // replaced with the deployed URL in Step 6
+export const DEFAULT_SERVER = 'https://fragwait-server.agthe7.workers.dev'
 
 export async function main(opts: CliOpts): Promise<void> {
   if (!opts.offline) {
