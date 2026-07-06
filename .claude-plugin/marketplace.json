@@ -1,0 +1,12 @@
+{
+  "name": "games",
+  "owner": { "name": "games contributors" },
+  "description": "Terminal games for Claude Code wait time",
+  "plugins": [
+    {
+      "name": "games",
+      "source": "./plugin",
+      "description": "Terminal games for Claude Code wait time"
+    }
+  ]
+}
