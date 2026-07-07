@@ -21,9 +21,16 @@ const CASES: Array<[string, number[]]> = [
 describe('perft', () => {
   for (const [fen, counts] of CASES) {
     counts.forEach((expected, i) => {
-      it(`${fen.split(' ')[0]} depth ${i + 1} = ${expected}`, () => {
-        expect(perft(fromFEN(fen), i + 1)).toBe(expected)
-      })
+      it(
+        `${fen.split(' ')[0]} depth ${i + 1} = ${expected}`,
+        () => {
+          expect(perft(fromFEN(fen), i + 1)).toBe(expected)
+        },
+        // applyMove now stamps `result` via detectResult (which itself runs a
+        // full legalMoves pass) on every move, so deep perft nodes cost more
+        // than the default 5s test timeout allows.
+        30_000,
+      )
     })
   }
 })

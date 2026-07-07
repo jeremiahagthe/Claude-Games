@@ -1,5 +1,6 @@
 import type { ChessState, Color, Piece, PieceType } from './board.js'
-import { sq, sqName } from './board.js'
+import { INCREMENT_MS, sq, sqName } from './board.js'
+import { detectResult } from './result.js'
 
 export interface Move {
   from: number
@@ -245,7 +246,7 @@ export function legalMoves(s: ChessState): Move[] {
   const pseudo = pseudoLegalMoves(s)
   const legal: Move[] = []
   for (const m of pseudo) {
-    const next = applyMove(s, m)
+    const next = applyMoveRaw(s, m)
     if (!isInCheck(next, s.turn)) legal.push(m)
   }
   return legal
@@ -260,7 +261,12 @@ export function positionKey(s: ChessState): string {
   return `${boardKey}|${s.turn}|${castlingKey || '-'}|${epKey}`
 }
 
-export function applyMove(s: ChessState, m: Move): ChessState {
+// Applies a move to the board/castling/ep/halfmove/history fields only —
+// does not touch clocksMs or result. Used internally by legalMoves for
+// check-filtering (which must not recurse into detectResult, since
+// detectResult itself calls legalMoves). The public applyMove below wraps
+// this with clock and result bookkeeping.
+function applyMoveRaw(s: ChessState, m: Move): ChessState {
   const piece = s.board[m.from]
   if (!piece || piece.color !== s.turn) throw new Error(`illegal move: no ${s.turn} piece on from-square`)
 
@@ -354,7 +360,27 @@ export function applyMove(s: ChessState, m: Move): ChessState {
     result: s.result,
   }
 
-  next.history = [...s.history, positionKey(next)]
+  // Seed the position the game started from into history on the very first
+  // move: a fresh ChessState (from initialState/fromFEN) starts with an
+  // empty history array, so without this the starting position would never
+  // be recorded and could never be counted toward threefold repetition.
+  next.history = s.history.length === 0 ? [positionKey(s), positionKey(next)] : [...s.history, positionKey(next)]
 
+  return next
+}
+
+/**
+ * Applies a legal move to the board. Contract (3+2 clocks): the caller must
+ * tick the mover's clock down via tickClock BEFORE calling applyMove;
+ * applyMove then ADDS INCREMENT_MS to the mover's clock after the move.
+ * Also stamps `result` via detectResult, reflecting checkmate/stalemate/
+ * fifty-move/threefold/insufficient-material as of the resulting position.
+ */
+export function applyMove(s: ChessState, m: Move): ChessState {
+  const mover = s.turn
+  const raw = applyMoveRaw(s, m)
+  const clocksMs = { ...raw.clocksMs, [mover]: raw.clocksMs[mover] + INCREMENT_MS }
+  const next: ChessState = { ...raw, clocksMs }
+  next.result = detectResult(next)
   return next
 }
