@@ -86,6 +86,13 @@ export async function runGame(opts: GameOpts): Promise<void> {
       tick()
       if (state.result) return
       const botMove = bestMove(state, DIFFICULTY_BUDGETS[opts.difficulty], seed++)
+      // Charge the bot's synchronous think time to the BOT's clock: without
+      // this tick, the next interval tick would land after applyMove flips
+      // the turn, silently billing the bot's search time to the player. If
+      // the bot flags while "thinking", the game ends here and the move is
+      // discarded (tickClock stamps the flag result).
+      tick()
+      if (state.result) return
       const botSan = toSAN(state, botMove)
       state = applyMove(state, botMove)
       sanHistory.push(botSan)

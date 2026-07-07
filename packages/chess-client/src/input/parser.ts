@@ -1,4 +1,9 @@
 // copied from packages/client/src/input/parser.ts (fragwait) — 2026-07-07
+// MODIFIED (Task 9): key CASE IS PRESERVED in both the plain-byte path and
+// the kitty CSI-u path (the fragwait original lowercased everywhere) — chess
+// SAN needs 'N'/'Q'/'B' distinct from pawn file letters. The CSI-u branch
+// also decodes the shift modifier and the alternate-keys shifted codepoint.
+// Callers wanting case-insensitive keys must lowercase themselves.
 export interface KeyEvent { key: string; kind: 'press' | 'repeat' | 'release' }
 
 // SGR mouse report (only MouseEvent carries a `type` field, so the union
@@ -51,11 +56,7 @@ export class KeyParser {
       if (ch === '\x03') out.push({ key: 'ctrl-c', kind: 'press' })
       else if (ch === '\x0d') out.push({ key: 'enter', kind: 'press' })
       else if (ch === '\x09') out.push({ key: 'tab', kind: 'press' })
-      // Task 9 divergence from the fragwait original: case is PRESERVED here
-      // (not lowercased) — chess SAN needs it (Nf3 vs a pawn's plain file
-      // letter), unlike fragwait's case-insensitive WASD controls. Callers
-      // that want case-insensitive comparison (quit's 'q', arrow-adjacent
-      // single-letter shortcuts) must lowercase the key themselves.
+      // case preserved (see MODIFIED note in the header) — no .toLowerCase()
       else if (ch >= ' ' && ch <= '~') out.push({ key: ch, kind: 'press' })
       // other control bytes: ignore
     }
@@ -73,11 +74,27 @@ export class KeyParser {
     if (final === 'u') {
       if (params.startsWith('?')) return { key: 'kitty-ack', kind: 'press' }
       const [codePart, modPart] = params.split(';')
-      const code = Number(codePart!.split(':')[0])
+      // Task 9 divergence from the fragwait original: case is PRESERVED here
+      // too (the original lowercased every codepoint — fine for WASD, fatal
+      // for SAN's uppercase piece letters). Kitty can report a shifted letter
+      // three ways, all handled:
+      //   CSI 78;2u      — pre-shifted codepoint (+ shift modifier)
+      //   CSI 110;2u     — base lowercase codepoint + shift modifier flag
+      //   CSI 110:78;2u  — alternate-keys form base:shifted (shifted wins)
+      const codeFields = codePart!.split(':')
+      const shiftedAlt = codeFields.length > 1 ? Number(codeFields[1]) : NaN
+      const code = Number.isFinite(shiftedAlt) ? shiftedAlt : Number(codeFields[0])
+      const modifiers = Number(modPart?.split(':')[0] ?? '1')
+      const shift = Number.isFinite(modifiers) && ((modifiers - 1) & 1) === 1
       const kind = EVENTS[modPart?.split(':')[1] ?? '1'] ?? 'press'
       const named = CODES[code]
-      const key = named ?? (code >= 32 && code < 127 ? String.fromCodePoint(code).toLowerCase() : null)
-      return key ? { key, kind } : null
+      let key = named ?? (code >= 32 && code < 127 ? String.fromCodePoint(code) : null)
+      // Apply the shift modifier to letters only: kitty sends the base-layout
+      // codepoint plus the modifier flag, so 'N' arrives as n+shift unless the
+      // terminal pre-shifted it. Shifted punctuation/digits either arrive
+      // pre-shifted or are layout-dependent — leave them alone.
+      if (key !== null && named === undefined && shift && key >= 'a' && key <= 'z') key = key.toUpperCase()
+      return key !== null ? { key, kind } : null
     }
     // Focus reporting (DEC ?1004): `CSI I` = focus-in, `CSI O` = focus-out.
     // Modeled as press KeyEvents so offline can drive mouselock re-engage;
