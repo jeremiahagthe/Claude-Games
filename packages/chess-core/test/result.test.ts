@@ -72,6 +72,20 @@ describe('tickClock', () => {
     const next = tickClock(s, INITIAL_CLOCK_MS + 1)
     expect(next.result).toEqual({ kind: 'insufficient' })
   })
+
+  it('white K+Q vs black bare K, white flags → draw (black can never mate)', () => {
+    const s = fromFEN('4k3/8/8/8/8/8/8/3QK3 w - - 0 1')
+    const next = tickClock(s, INITIAL_CLOCK_MS + 1)
+    expect(next.clocksMs.w).toBe(0)
+    expect(next.result).toEqual({ kind: 'insufficient' })
+  })
+
+  it('white K+Q vs black bare K, black flags → white wins (white can mate)', () => {
+    const s = fromFEN('4k3/8/8/8/8/8/8/3QK3 b - - 0 1')
+    const next = tickClock(s, INITIAL_CLOCK_MS + 1)
+    expect(next.clocksMs.b).toBe(0)
+    expect(next.result).toEqual({ kind: 'flag', winner: 'w' })
+  })
 })
 
 describe('applyMove clock increment', () => {

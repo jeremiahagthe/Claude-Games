@@ -364,6 +364,9 @@ function applyMoveRaw(s: ChessState, m: Move): ChessState {
   // move: a fresh ChessState (from initialState/fromFEN) starts with an
   // empty history array, so without this the starting position would never
   // be recorded and could never be counted toward threefold repetition.
+  // Note: `history.length === 0` is a proxy for "fresh state constructed by
+  // initialState/fromFEN" — any state that has already been through
+  // applyMove carries a non-empty history.
   next.history = s.history.length === 0 ? [positionKey(s), positionKey(next)] : [...s.history, positionKey(next)]
 
   return next

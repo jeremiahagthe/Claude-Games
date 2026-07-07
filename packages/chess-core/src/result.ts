@@ -11,9 +11,26 @@ function squareColor(i: number): 0 | 1 {
   return ((file + rank) % 2) as 0 | 1
 }
 
-// K vs K, K+N/B vs K, or K+B vs K+B with same-colored bishops — no side can
-// force checkmate. Used both by detectResult (draw) and tickClock (a flag
-// against a king with no mating material is a draw, not a win).
+// True when `color` alone lacks mating material: bare K, K+single N, or
+// K+single B. Used by tickClock — a flag is only a win for the opponent if
+// the OPPONENT could ever deliver mate; the flagged player's own material
+// is irrelevant (FIDE 6.9).
+function sideHasInsufficientMaterial(s: ChessState, color: Color): boolean {
+  const pieces: Piece[] = []
+  for (const piece of s.board) {
+    if (piece && piece.color === color && piece.type !== 'k') pieces.push(piece)
+  }
+  if (pieces.length === 0) return true
+  if (pieces.length === 1) {
+    const type = pieces[0]!.type
+    return type === 'n' || type === 'b'
+  }
+  return false
+}
+
+// Whole-board symmetric check: K vs K, K+N/B vs K, or K+B vs K+B with
+// same-colored bishops — NO side can force checkmate. Used by detectResult
+// to declare a dead-material draw.
 export function isInsufficientMaterial(s: ChessState): boolean {
   const pieces: Array<{ piece: Piece; square: number }> = []
   for (let i = 0; i < 64; i++) {
@@ -72,7 +89,10 @@ export function tickClock(s: ChessState, elapsedMs: number): ChessState {
   if (remaining > 0) {
     return { ...s, clocksMs }
   }
-  const result: Result = isInsufficientMaterial(s)
+  // Scope the check to the flagged player's OPPONENT: the flag is only a
+  // win if the opponent could ever mate (e.g. white K+Q flags vs bare black
+  // K → draw; but bare black K flags vs white K+Q → white wins).
+  const result: Result = sideHasInsufficientMaterial(s, other(mover))
     ? { kind: 'insufficient' }
     : { kind: 'flag', winner: other(mover) }
   return { ...s, clocksMs, result }
