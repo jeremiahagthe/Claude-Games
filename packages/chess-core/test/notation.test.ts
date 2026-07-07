@@ -96,6 +96,58 @@ describe('toSAN: captures, checks, and mate', () => {
   })
 })
 
+describe('promotion SAN', () => {
+  // Black king on a8 is out of the new queen/rook's reach for mate but on
+  // the back rank, so =Q/=R give check and =B/=N do not (verified via
+  // applyMove + isInCheck + legalMoves).
+  const PROMO_FEN = 'k7/4P3/8/8/8/8/8/4K3 w - - 0 1'
+  // Perft-suite position: d8 is occupied (black queen), so the d7 pawn's
+  // only promotions are the four captures dxc8 (bishop on c8).
+  const PROMO_RICH_FEN = 'rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8'
+
+  it('toSAN renders promotions with =X and the correct check suffix', () => {
+    const s = fromFEN(PROMO_FEN)
+    const from = nameSq('e7')
+    const to = nameSq('e8')
+    expect(toSAN(s, { from, to, promotion: 'q' })).toBe('e8=Q+')
+    expect(toSAN(s, { from, to, promotion: 'r' })).toBe('e8=R+')
+    expect(toSAN(s, { from, to, promotion: 'b' })).toBe('e8=B')
+    expect(toSAN(s, { from, to, promotion: 'n' })).toBe('e8=N')
+  })
+
+  it('parseMove accepts =X promotion SAN, with or without the check suffix', () => {
+    const s = fromFEN(PROMO_FEN)
+    const queenPromo = { from: nameSq('e7'), to: nameSq('e8'), promotion: 'q' }
+    expect(parseMove(s, 'e8=Q')).toEqual(queenPromo)
+    expect(parseMove(s, 'e8=Q+')).toEqual(queenPromo)
+    expect(parseMove(s, 'e8=N')).toEqual({ from: nameSq('e7'), to: nameSq('e8'), promotion: 'n' })
+  })
+
+  it('handles capture-promotion in both directions (dxc8=Q)', () => {
+    const s = fromFEN(PROMO_RICH_FEN)
+    const move = { from: nameSq('d7'), to: nameSq('c8'), promotion: 'q' }
+    expect(toSAN(s, move)).toBe('dxc8=Q')
+    expect(parseMove(s, 'dxc8=Q')).toEqual(move)
+  })
+
+  it('round-trips every legal move in a promotion-rich position (incl. capture-promotions)', () => {
+    const s = fromFEN(PROMO_RICH_FEN)
+    const moves = legalMoves(s)
+    // Sanity: the fixture really contains all four capture-promotions.
+    expect(moves.filter((m) => m.promotion).map((m) => m.promotion).sort()).toEqual(['b', 'n', 'q', 'r'])
+    for (const m of moves) {
+      expect(parseMove(s, toSAN(s, m))).toEqual(m)
+    }
+  })
+
+  it('renders promotion mate as c8=Q# (verified: black king a8 boxed by white king b6)', () => {
+    const s = fromFEN('k7/2P5/1K6/8/8/8/8/8 w - - 0 1')
+    const move = { from: nameSq('c7'), to: nameSq('c8'), promotion: 'q' }
+    expect(toSAN(s, move)).toBe('c8=Q#')
+    expect(parseMove(s, 'c8=Q#')).toEqual(move)
+  })
+})
+
 describe('parseMove: garbage input never throws and returns null', () => {
   it.each(['zzzz', '', 'e9e9'])('returns null for %s', (input) => {
     const s = fromFEN(START)
