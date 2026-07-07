@@ -4,9 +4,9 @@ import type { ChessState } from 'checkwait-core'
 import { cellToSquare, renderBoard, type RenderOpts } from '../src/board-render.js'
 
 function strip(s: string): string {
-  // CSI SGR, OSC, and VT100 line attributes (ESC#n — feel chess-2 DECDWL/DECDHL)
+  // CSI SGR, cursor-home/clear (ESC[H / ESC[J), and OSC sequences
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '').replace(/\x1b#[0-9]/g, '')
+  return s.replace(/\x1b\[[0-9;]*[mHJ]/g, '').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '')
 }
 
 function baseOpts(overrides: Partial<RenderOpts> = {}): RenderOpts {
@@ -31,17 +31,30 @@ describe('renderBoard', () => {
     expect(out).toContain('○ 3:00')
   })
 
-  // feel-1: truecolor uses the FILLED glyph set for both sides (outline set
-  // rendered faint) — side is carried by explicit piece foreground colors.
+  // feel-1: side is carried by explicit piece foreground colors.
+  // feel chess-3: truecolor WIDE pieces are half-block PIXEL SPRITES that
+  // fill their square — no font glyph can be bigger than the font, so the
+  // glyph sets (filled included) are retired in this mode.
   const WHITE_FG = '\x1b[38;2;255;255;255m'
   const BLACK_FG = '\x1b[38;2;20;20;20m'
 
-  it('renders filled glyphs with per-side piece foregrounds (truecolor)', () => {
+  it('renders half-block sprite pieces with per-side foregrounds (truecolor WIDE)', () => {
     const out = renderBoard(baseOpts())
-    expect(out).toContain('♚')
-    expect(out).not.toContain('♔') // outline set retired in feel-1
+    expect(out).toMatch(/[▀▄█]/)
+    expect(out).not.toContain('♚') // glyphs retired in sprite mode (feel chess-3)
+    expect(out).not.toContain('♔')
     expect(out).toContain(WHITE_FG)
     expect(out).toContain(BLACK_FG)
+  })
+
+  it('sprites span multiple rows of their square (pieces fill the cell, not one text row)', () => {
+    const out = renderBoard(baseOpts())
+    const blockLines = strip(out)
+      .split('\r\n')
+      .filter((l) => /[▀▄█]/.test(l))
+    // 4 piece ranks x 3 subrows = up to 12 lines carry sprite pixels; the
+    // old glyph renderer put pieces on exactly 4 (one middle row per rank).
+    expect(blockLines.length).toBeGreaterThan(4)
   })
 
   it('renders letter pieces in basic mode (uppercase = white)', () => {
@@ -68,10 +81,10 @@ describe('renderBoard', () => {
     expect(out).toContain('\x1b[48;2;125;143;77m')
   })
 
-  it('emits the pinned legal-target SGR background for legal target squares', () => {
+  it('emits the pinned legal-target SGR background and a dot marker for legal target squares', () => {
     const out = renderBoard(baseOpts({ legalTargets: [28] })) // e4, empty square
     expect(out).toContain('\x1b[48;2;130;151;105m')
-    expect(out).toContain('•')
+    expect(out).toContain('\x1b[38;2;235;235;235m') // legal-dot sprite fg (feel chess-3)
   })
 
   it('emits the pinned last-move SGR background (#a3a84f) for from/to squares', () => {
@@ -89,40 +102,25 @@ describe('renderBoard', () => {
     expect(lines.some((l) => l.length === 48)).toBe(false)
   })
 
-  // feel chess-2: double-size piece rows (DECDWL/DECDHL) on supporting terminals.
-  it('bigPieces: each rank is spacer + DECDHL top/bottom halves, same 24-line board', () => {
-    const out = renderBoard(baseOpts({ bigPieces: true }))
-    expect(out).toContain('\x1b#3')
-    expect(out).toContain('\x1b#4')
-    const lines = out.split('\r\n')
-    expect(lines.length).toBe(28) // 8 * (1 spacer + 2 half-rows) + 4 HUD — geometry unchanged
-    expect(lines.filter((l) => l.startsWith('\x1b#3')).length).toBe(8)
-    expect(lines.filter((l) => l.startsWith('\x1b#4')).length).toBe(8)
-    // top/bottom halves carry identical content so the glyph spans both rows
-    const top = lines.find((l) => l.startsWith('\x1b#3'))
-    const bottom = lines.find((l) => l.startsWith('\x1b#4'))
-    expect(top?.slice(3)).toBe(bottom?.slice(3))
-    // piece cells are cw/2 logical chars (double width = same visual columns)
-    const stripped = strip(out).split('\r\n')
-    expect(stripped.some((l) => l.length === 24)).toBe(true) // piece rows
-    expect(stripped.some((l) => l.length === 48)).toBe(true) // spacer rows
+  // feel chess-3: squares grow with the terminal (cw = 2*ch, visually
+  // square) so sprites get bigger the more room there is — capped at 16x8.
+  it('scales squares up on a big terminal (130x44 → 10x5 cells, 80-wide board lines)', () => {
+    const out = renderBoard(baseOpts({ cols: 130, rows: 44 }))
+    const lines = strip(out).split('\r\n')
+    expect(lines.some((l) => l.length === 80)).toBe(true) // 8 * cw=10
+    expect(lines.length).toBe(44) // 8 * ch=5 + 4 HUD
   })
 
-  it('bigPieces is ignored in basic mode and NARROW cells (no DECDHL emitted)', () => {
-    const basic = renderBoard(baseOpts({ bigPieces: true, colorMode: 'basic' }))
-    expect(basic).not.toContain('\x1b#3')
-    const narrow = renderBoard(baseOpts({ bigPieces: true, cols: 59, rows: 22 }))
-    expect(narrow).not.toContain('\x1b#3')
+  it('caps square growth at 16x8 cells on huge terminals', () => {
+    const out = renderBoard(baseOpts({ cols: 400, rows: 200 }))
+    const lines = strip(out).split('\r\n')
+    expect(lines.some((l) => l.length === 128)).toBe(true) // 8 * cw=16
+    expect(lines.some((l) => l.length > 128)).toBe(false)
   })
 
-  it('non-double lines carry an explicit single-width attribute (ESC#5)', () => {
-    const out = renderBoard(baseOpts({ bigPieces: true }))
-    const lines = out.split('\r\n')
-    // stale double-height attributes must be impossible after resize
-    for (const l of lines) {
-      const isHalf = l.startsWith('\x1b#3') || l.startsWith('\x1b#4')
-      if (!isHalf) expect(l.includes('\x1b#5')).toBe(true)
-    }
+  it('sprite mode never emits VT100 line attributes (feel chess-2 DECDHL retired)', () => {
+    const out = renderBoard(baseOpts())
+    expect(out).not.toContain('\x1b#')
   })
 
   it('never emits more lines than the terminal has rows', () => {

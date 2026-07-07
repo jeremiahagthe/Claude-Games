@@ -16,11 +16,6 @@ export interface RenderOpts {
   sanHistory?: string[] // last ~8 SAN moves, oldest first; toSAN is called BEFORE applyMove
   opponentHandle?: string // e.g. 'bot·easy' offline (Task 9's call — see game.ts); real handle online (Task 10)
   statusLine?: string // Claude-attention banner / quit-confirm hint / typed-move buffer
-  // feel chess-2: render piece rows at double width+height via DECDWL/DECDHL
-  // (ESC#3/#4) so glyphs fill their squares. Callers gate this on
-  // caps.supportsDoubleSizePieces — unsupporting terminals would draw the
-  // piece row twice at single size. Only takes effect in truecolor + WIDE.
-  bigPieces?: boolean
 }
 
 const ESC = '\x1b'
@@ -38,6 +33,7 @@ const CHECK_RGB: readonly [number, number, number] = [224, 82, 82] // #e05252
 // Piece foregrounds (feel-1): side is carried by color, not glyph shape.
 const WHITE_PIECE_RGB: readonly [number, number, number] = [255, 255, 255]
 const BLACK_PIECE_RGB: readonly [number, number, number] = [20, 20, 20] // #141414
+const DOT_RGB: readonly [number, number, number] = [235, 235, 235] // legal-move dot on empty squares
 
 function bg(rgb: readonly [number, number, number], underline: boolean): string {
   return underline ? `${ESC}[4;48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : `${ESC}[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
@@ -47,9 +43,117 @@ function fg(rgb: readonly [number, number, number]): string {
   return `${ESC}[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
 }
 
-// Truecolor mode uses the FILLED glyph set for BOTH sides (feel-1): the
-// outline set (♔♙…) is thin line-art that renders faint in most terminal
-// fonts; solid shapes + explicit fg color carry the side unambiguously.
+// feel chess-3: truecolor WIDE cells draw pieces as PIXEL SPRITES — half-block
+// characters (▀▄█) over the square background — instead of single font glyphs.
+// A glyph can never be bigger than the font; a sprite fills the whole square.
+// Each piece is an 8x8 bitmask, scaled nearest-neighbor to the square's
+// cw x 2*ch pixel grid (one terminal cell = two vertically stacked pixels).
+// The masks carry their own ~1px border so scaled sprites stay centered.
+const SPRITE_MASKS: Record<PieceType, readonly string[]> = {
+  p: [
+    '........', //
+    '...##...', //
+    '..####..', //
+    '..####..', //
+    '...##...', //
+    '...##...', //
+    '..####..', //
+    '.######.', //
+  ],
+  r: [
+    '........', //
+    '.#.##.#.', //
+    '.######.', //
+    '..####..', //
+    '..####..', //
+    '..####..', //
+    '..####..', //
+    '.######.', //
+  ],
+  n: [
+    '........', //
+    '..##.#..', //
+    '.#####..', //
+    '######..', //
+    '##.###..', //
+    '...###..', //
+    '..####..', //
+    '.######.', //
+  ],
+  b: [
+    '........', //
+    '...##...', //
+    '..####..', //
+    '..##.#..', //
+    '..####..', //
+    '...##...', //
+    '..####..', //
+    '.######.', //
+  ],
+  q: [
+    '........', //
+    '#.#..#.#', //
+    '########', //
+    '.######.', //
+    '..####..', //
+    '...##...', //
+    '..####..', //
+    '.######.', //
+  ],
+  k: [
+    '...##...', //
+    '..####..', //
+    '...##...', //
+    '..####..', //
+    '.######.', //
+    '..####..', //
+    '..####..', //
+    '.######.', //
+  ],
+}
+
+// Small centered dot marking a legal move on an empty square.
+const DOT_MASK: readonly string[] = [
+  '........', //
+  '........', //
+  '........', //
+  '...##...', //
+  '...##...', //
+  '........', //
+  '........', //
+  '........', //
+]
+
+function scaleMask(mask: readonly string[], w: number, h: number): boolean[][] {
+  const out: boolean[][] = []
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(7, Math.floor((y * 8) / h))
+    const row: boolean[] = []
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(7, Math.floor((x * 8) / w))
+      row.push(mask[sy]?.[sx] === '#')
+    }
+    out.push(row)
+  }
+  return out
+}
+
+const spriteCache = new Map<string, boolean[][]>()
+
+function sprite(key: string, mask: readonly string[], cw: number, ch: number): boolean[][] {
+  const cacheKey = `${key}:${cw}x${ch}`
+  let s = spriteCache.get(cacheKey)
+  if (!s) {
+    s = scaleMask(mask, cw, 2 * ch)
+    spriteCache.set(cacheKey, s)
+  }
+  return s
+}
+
+// Truecolor NARROW cells (4x2 — too coarse for sprites) still use the filled
+// glyph set for BOTH sides (feel-1): the outline set (♔♙…) is thin line-art
+// that renders faint in most terminal fonts; solid shapes + explicit fg color
+// carry the side unambiguously.
 const FILLED_GLYPHS: Record<PieceType, string> = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
 
 function pieceGlyph(type: PieceType): string {
@@ -67,18 +171,23 @@ interface CellGeometry {
   ch: number
 }
 
-const WIDE: CellGeometry = { cw: 6, ch: 3 }
 const NARROW: CellGeometry = { cw: 4, ch: 2 }
-// HUD is 4 lines (clock, san/last-move, opponent, status). WIDE needs
-// 8*3 + 4 = 28 rows — the frame must FIT the terminal or the top rank
-// scrolls off (feel-1: rank 8 was clipped at the spec-recommended 100x28
-// because the old threshold only fell back below 22 rows).
+// HUD is 4 lines (clock, san/last-move, opponent, status). The frame must
+// FIT the terminal or the top rank scrolls off (feel-1: rank 8 was clipped
+// at the spec-recommended 100x28 because the old threshold only fell back
+// below 22 rows).
 export const HUD_LINES = 4
-const FALLBACK_COLS = 60
-const FALLBACK_ROWS = 8 * WIDE.ch + HUD_LINES // 28
+const MIN_WIDE_CH = 3 // below this, cells are too coarse for sprites → NARROW glyphs
+const MAX_CH = 8 // squares stop growing at 16x8 cells — beyond this the board dwarfs the HUD
 
+// Adaptive square size (feel chess-3): pick the largest square that fits the
+// terminal, keeping cw = 2*ch (terminal cells are ~1:2, so the square — and
+// its cw x 2*ch pixel grid — stays visually square). Bigger window = bigger
+// squares = bigger piece sprites.
 export function cellSize(cols: number, rows: number): CellGeometry {
-  return cols < FALLBACK_COLS || rows < FALLBACK_ROWS ? NARROW : WIDE
+  const ch = Math.min(Math.floor((rows - HUD_LINES) / 8), Math.floor(cols / 16), MAX_CH)
+  if (ch < MIN_WIDE_CH) return NARROW
+  return { cw: 2 * ch, ch }
 }
 
 // Visual row order (top of screen -> bottom): white sees rank8 down to
@@ -165,57 +274,14 @@ export function renderBoard(o: RenderOpts): string {
   const legalSet = new Set(o.legalTargets)
   const inCheck = isInCheck(o.state, o.state.turn)
   const kingSquare = inCheck ? findKingSquare(o.state, o.state.turn) : null
+  // Sprite pieces need truecolor (half-blocks composite piece fg over square
+  // bg) and a cell big enough to carry a readable bitmap.
+  const sprites = o.colorMode === 'truecolor' && ch >= MIN_WIDE_CH
 
   const lines: string[] = []
-  // Double-size piece rows need DECDWL/DECDHL (gated by the caller) and only
-  // make sense in truecolor WIDE cells (NARROW has no spacer row to give up).
-  const big = o.bigPieces === true && o.colorMode === 'truecolor' && ch === WIDE.ch
-  // Lines that are NOT double get an explicit single-width attribute so a
-  // resize/mode change can never leave a stale double-height line behind.
-  const SINGLE = `${ESC}#5`
-
   for (const rank of ranks) {
-    if (big) {
-      // 3 screen rows per rank: 1 normal spacer + the piece row twice as
-      // DECDHL top/bottom halves. Piece row cells are cw/2 logical chars —
-      // double width makes them the same cw visual columns as the spacer,
-      // so cellToSquare's geometry is unchanged.
-      let spacer = ''
-      let pieceRow = ''
-      for (const file of files) {
-        const idx = rank * 8 + file
-        const piece = o.state.board[idx]
-        const isLight = (file + rank) % 2 === 1
-        const isSelected = o.selected === idx
-        const isCheck = kingSquare === idx
-        const isLastMove = !!o.lastMove && (o.lastMove.from === idx || o.lastMove.to === idx)
-        const isLegal = legalSet.has(idx)
-        const isCursor = o.cursor === idx
-        const rgb = isSelected
-          ? SELECTED_RGB
-          : isCheck
-            ? CHECK_RGB
-            : isLastMove
-              ? LAST_MOVE_RGB
-              : isLegal
-                ? LEGAL_RGB
-                : isLight
-                  ? LIGHT_RGB
-                  : DARK_RGB
-        spacer += bg(rgb, isCursor) + ' '.repeat(cw) + RESET
-        let cellText = ' '.repeat(cw / 2)
-        if (piece) cellText = centerPad(pieceGlyph(piece.type), cw / 2)
-        else if (isLegal) cellText = centerPad('•', cw / 2)
-        const pieceFg = piece ? fg(piece.color === 'w' ? WHITE_PIECE_RGB : BLACK_PIECE_RGB) : ''
-        pieceRow += bg(rgb, isCursor) + pieceFg + cellText + RESET
-      }
-      lines.push(SINGLE + spacer)
-      lines.push(`${ESC}#3` + pieceRow)
-      lines.push(`${ESC}#4` + pieceRow)
-      continue
-    }
     for (let subRow = 0; subRow < ch; subRow++) {
-      let line = SINGLE
+      let line = ''
       for (const file of files) {
         const idx = rank * 8 + file
         const piece = o.state.board[idx]
@@ -225,17 +291,6 @@ export function renderBoard(o: RenderOpts): string {
         const isLastMove = !!o.lastMove && (o.lastMove.from === idx || o.lastMove.to === idx)
         const isLegal = legalSet.has(idx)
         const isCursor = o.cursor === idx
-
-        const middleRow = subRow === Math.floor(ch / 2)
-        let cellText = ' '.repeat(cw)
-        if (middleRow) {
-          if (piece) {
-            const glyph = o.colorMode === 'truecolor' ? pieceGlyph(piece.type) : pieceLetter(piece.type, piece.color)
-            cellText = centerPad(glyph, cw)
-          } else if (isLegal) {
-            cellText = centerPad('•', cw)
-          }
-        }
 
         if (o.colorMode === 'truecolor') {
           const rgb = isSelected
@@ -249,9 +304,45 @@ export function renderBoard(o: RenderOpts): string {
                   : isLight
                     ? LIGHT_RGB
                     : DARK_RGB
-          const pieceFg = middleRow && piece ? fg(piece.color === 'w' ? WHITE_PIECE_RGB : BLACK_PIECE_RGB) : ''
-          line += bg(rgb, isCursor) + pieceFg + cellText + RESET
+          if (sprites) {
+            // Two pixel rows per terminal row: ▀ paints the top pixel in fg
+            // over the bg, ▄ the bottom, █ both, space neither.
+            let spr: boolean[][] | null = null
+            let sprFg = ''
+            if (piece) {
+              spr = sprite(piece.type, SPRITE_MASKS[piece.type], cw, ch)
+              sprFg = fg(piece.color === 'w' ? WHITE_PIECE_RGB : BLACK_PIECE_RGB)
+            } else if (isLegal) {
+              spr = sprite('dot', DOT_MASK, cw, ch)
+              sprFg = fg(DOT_RGB)
+            }
+            let cell = bg(rgb, isCursor)
+            const topRow = spr?.[2 * subRow]
+            const botRow = spr?.[2 * subRow + 1]
+            for (let x = 0; x < cw; x++) {
+              const top = topRow?.[x] === true
+              const bot = botRow?.[x] === true
+              if (!top && !bot) cell += ' '
+              else cell += sprFg + (top && bot ? '█' : top ? '▀' : '▄')
+            }
+            line += cell + RESET
+          } else {
+            const middleRow = subRow === Math.floor(ch / 2)
+            let cellText = ' '.repeat(cw)
+            if (middleRow) {
+              if (piece) cellText = centerPad(pieceGlyph(piece.type), cw)
+              else if (isLegal) cellText = centerPad('•', cw)
+            }
+            const pieceFg = middleRow && piece ? fg(piece.color === 'w' ? WHITE_PIECE_RGB : BLACK_PIECE_RGB) : ''
+            line += bg(rgb, isCursor) + pieceFg + cellText + RESET
+          }
         } else {
+          const middleRow = subRow === Math.floor(ch / 2)
+          let cellText = ' '.repeat(cw)
+          if (middleRow) {
+            if (piece) cellText = centerPad(pieceLetter(piece.type, piece.color), cw)
+            else if (isLegal) cellText = centerPad('•', cw)
+          }
           // basic mode: reverse-video checkering; highlights layer SGR codes
           // on top (pinned, in priority order: selected > check > last-move > legal).
           const codes: string[] = []
@@ -270,11 +361,12 @@ export function renderBoard(o: RenderOpts): string {
   }
 
   // Compact 4-line HUD (feel-1): SAN history when available, else the
-  // coordinate last-move line — never both, so WIDE + HUD fits 28 rows.
-  lines.push(SINGLE + clockLine(o.state, o.selfColor))
-  lines.push(SINGLE + (o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove)))
-  lines.push(SINGLE + (o.opponentHandle ? `vs ${o.opponentHandle}` : ''))
-  lines.push(SINGLE + (o.statusLine ?? ''))
+  // coordinate last-move line — never both, so board + HUD fits the rows
+  // budget cellSize() sized the squares against.
+  lines.push(clockLine(o.state, o.selfColor))
+  lines.push(o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove))
+  lines.push(o.opponentHandle ? `vs ${o.opponentHandle}` : '')
+  lines.push(o.statusLine ?? '')
 
   // Never emit more lines than the terminal has — overflow scrolls the TOP
   // rank off (feel-1). Drop HUD tail lines, never board rows.
