@@ -38,8 +38,9 @@ export function sqName(i: number): string {
 }
 
 export function nameSq(n: string): number {
-  const file = FILES.indexOf(n[0] ?? '')
-  const rank = Number(n.slice(1)) - 1
+  if (!/^[a-h][1-8]$/.test(n)) throw new Error(`invalid square name: ${n}`)
+  const file = FILES.indexOf(n[0]!)
+  const rank = Number(n[1]) - 1
   return sq(file, rank)
 }
 

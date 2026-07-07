@@ -20,6 +20,15 @@ describe('board + FEN', () => {
       expect(toFEN(fromFEN(f))).toBe(f)
     }
   })
+  it('fromFEN throws on garbage en-passant fields', () => {
+    for (const ep of ['z9', 'e10', 'xx', 'e0', 'i3', '4', 'e']) {
+      expect(() => fromFEN(`rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq ${ep} 0 1`))
+        .toThrow(Error)
+    }
+  })
+  it('fromFEN throws on consecutive-digit rank runs', () => {
+    expect(() => fromFEN('44/8/8/8/8/8/8/8 w - - 0 1')).toThrow(Error)
+  })
   it('fromFEN sets fresh clocks and empty bookkeeping', () => {
     const s = fromFEN(KIWIPETE)
     expect(s.clocksMs).toEqual({ w: 180_000, b: 180_000 })

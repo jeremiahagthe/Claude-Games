@@ -77,11 +77,15 @@ export function fromFEN(fen: string): ChessState {
     const rank = 7 - r
     const row = ranks[r]!
     let file = 0
+    let prevWasDigit = false
     for (const ch of row) {
       if (/[1-8]/.test(ch)) {
+        if (prevWasDigit) throw new Error(`invalid FEN rank (consecutive digits): ${row}`)
+        prevWasDigit = true
         file += Number(ch)
         continue
       }
+      prevWasDigit = false
       if (file > 7) throw new Error(`invalid FEN rank (overflow): ${row}`)
       board[sq(file, rank)] = letterToPiece(ch)
       file++
