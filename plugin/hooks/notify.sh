@@ -15,5 +15,5 @@ if [ -n "${PORT:-}" ]; then
 fi
 
 if [ "$EVENT" = "done" ]; then MSG="Claude Code: task finished - return to terminal"; else MSG="Claude Code needs your input"; fi
-printf '{"terminalSequence":"\\u001b]0;fragwait: %s\\u0007\\u001b]9;%s\\u0007"}' "$MSG" "$MSG"
+printf '{"terminalSequence":"\\u001b]0;games: %s\\u0007\\u001b]9;%s\\u0007"}' "$MSG" "$MSG"
 exit 0

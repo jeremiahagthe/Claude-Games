@@ -4,6 +4,11 @@
       "id": "fragwait",
       "title": "fragwait — terminal FPS deathmatch",
       "cmd": "npx -y fragwait@0.1.4"
+    },
+    {
+      "id": "checkwait",
+      "title": "checkwait — terminal blitz chess",
+      "cmd": "npx -y checkwait@0.1.0"
     }
   ]
 }

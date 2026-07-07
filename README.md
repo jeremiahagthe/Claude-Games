@@ -26,6 +26,7 @@ per-kill so getting interrupted never costs you progress.
 ## The arcade
 
 - **fragwait** (game 1) — terminal FPS deathmatch, ships today.
+- **checkwait** (game 2) — terminal blitz chess, ships today.
 - More games rotate in over time as the plugin updates — `/games` always
   picks the next one in rotation, so repeat plays surface new games
   automatically.
@@ -57,7 +58,7 @@ effects, and `fragwait doctor` to print a terminal-capability report
 (color mode, mouse protocol tier, key-repeat timings). Point at a
 self-hosted server with `--server <url>` or the `FRAGWAIT_SERVER` env var.
 
-## Controls
+## fragwait controls
 
 | Input | Action |
 |---|---|
@@ -71,6 +72,41 @@ self-hosted server with `--server <url>` or the `FRAGWAIT_SERVER` env var.
 | `Tab` (hold) | Scoreboard |
 | `Q` / `Esc` / `Ctrl-C` | Quit |
 
+## checkwait — terminal blitz chess
+
+**Game 2: checkwait** — 3+2 blitz (3 minutes on the clock, +2s per move) you
+play while Claude works, the same 3–6 minute session shape as a fragwait
+match. Online PvP via matchmaking by default — if no opponent shows up
+within ~10s, it falls back to a local bot automatically (announced in the
+HUD: "no opponent online — playing the bot"), so there's always a game.
+
+Unicode pieces on a checkered board, with an ASCII/letters fallback on
+low-color terminals. Both clocks and a running SAN move list stay in the
+HUD alongside the Claude status line and finish banner — same integration
+as fragwait, described below.
+
+### Standalone play
+
+```
+npx -y checkwait
+```
+
+Add `--offline` to skip matchmaking and play a local bot-only match,
+`--difficulty easy|normal|hard` to tune the bot (default `easy`), `--name
+<handle>` to set your display name, `--mute` to silence sound effects, and
+`--server <url>` to point at a self-hosted worker (checkwait's matchmaking
+and fragwait's deathmatch share the same Cloudflare Worker deployment).
+
+### checkwait controls
+
+| Input | Action |
+|---|---|
+| Click a piece, then click a destination | Move (legal destinations highlight after the first click) |
+| Type a move + `Enter` | Move via coordinate (`e2e4`) or SAN (`Nf3`, `O-O`) |
+| Arrow keys, then `Enter` | Move a board cursor and confirm, for mouse-free play |
+| `q` / `r` / `b` / `n` (on promotion) | Pick the promotion piece |
+| `Q` / `Esc` | Quit (requires a second press to confirm — online, this resigns the game) |
+
 ## How the Claude integration works
 
 `/games` is user-invoked only (`disable-model-invocation: true` — Claude
@@ -80,9 +116,9 @@ keep it in sync with your Claude Code session:
 - **`UserPromptSubmit`** — touches `~/.fragwait/busy-<session_id>` so the
   in-game HUD can show "Claude working 1m32s".
 - **`Stop`** and **`Notification`** (`idle_prompt` / `permission_prompt`
-  matchers) — POST a `done`/`attention` event to the fragwait client (read
-  from `~/.fragwait/client.json`) and emit a desktop notification, so a
-  banner lands in-game the moment your turn is ready.
+  matchers) — POST a `done`/`attention` event to whichever game client is
+  running (read from `~/.fragwait/client.json`) and emit a desktop
+  notification, so a banner lands in-game the moment your turn is ready.
 
 **Full transparency — files this plugin writes, and nothing else:**
 
