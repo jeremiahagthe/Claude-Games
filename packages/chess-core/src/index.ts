@@ -1,5 +1,6 @@
 export * from './board.js'
 export * from './fen.js'
 export * from './movegen.js'
+export * from './notation.js'
 export * from './prng.js'
 export * from './result.js'
