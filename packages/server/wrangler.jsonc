@@ -5,10 +5,13 @@
   "durable_objects": {
     "bindings": [
       { "name": "MATCH", "class_name": "MatchDO" },
-      { "name": "LOBBY", "class_name": "LobbyDO" }
+      { "name": "LOBBY", "class_name": "LobbyDO" },
+      { "name": "CHESS_LOBBY", "class_name": "ChessLobbyDO" },
+      { "name": "CHESS_MATCH", "class_name": "ChessMatchDO" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["MatchDO", "LobbyDO"] }
+    { "tag": "v1", "new_sqlite_classes": ["MatchDO", "LobbyDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["ChessLobbyDO", "ChessMatchDO"] }
   ]
 }
