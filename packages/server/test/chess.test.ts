@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { parseChessServerMsg } from 'checkwait-core'
-import { ChessLobbyQueue } from '../src/chess-lobby.js'
+import { ChessLobbyQueue, type LobbyOutcome } from '../src/chess-lobby.js'
 import { ChessMatchHost, parseChessMatchId, type ChessConn } from '../src/chess-match.js'
 
 function conn(): ChessConn & { sent: string[] } {
@@ -8,31 +8,51 @@ function conn(): ChessConn & { sent: string[] } {
   return { sent, send: (d: string) => sent.push(d), close: () => {} }
 }
 
+function outcomeCapture(): { outcomes: LobbyOutcome[]; resolve: (o: LobbyOutcome) => void } {
+  const outcomes: LobbyOutcome[] = []
+  return { outcomes, resolve: (o) => outcomes.push(o) }
+}
+
 describe('ChessLobbyQueue', () => {
-  it('pairs a second joiner within 10s with the first', () => {
+  it('pairing resolves the waiter immediately — no waiting out the 10s window', () => {
     const q = new ChessLobbyQueue()
-    expect(q.join('m1', 0)).toEqual({ paired: false })
-    expect(q.join('m2', 5_000)).toEqual({ paired: true, matchId: 'm1' })
+    const waiter = outcomeCapture()
+    expect(q.join('m1', 0, waiter.resolve)).toEqual({ paired: false })
+    expect(waiter.outcomes).toHaveLength(0) // still pending
+    expect(q.join('m2', 5_000, outcomeCapture().resolve)).toEqual({ paired: true, matchId: 'm1' })
+    expect(waiter.outcomes).toEqual([{ matchId: 'm1' }]) // woken NOW, not at t=10s
   })
 
   it('reports no opponent once the waiter times out, and a later joiner does not pair with the stale entry', () => {
     const q = new ChessLobbyQueue()
-    expect(q.join('m1', 0)).toEqual({ paired: false })
-    expect(q.expire('m1')).toBe(true) // the original waiter's own ~10s timeout fires
-    expect(q.join('m2', 20_000)).toEqual({ paired: false }) // registers as a fresh waiter
+    const waiter = outcomeCapture()
+    expect(q.join('m1', 0, waiter.resolve)).toEqual({ paired: false })
+    q.expire('m1') // the original waiter's own ~10s timeout fires
+    expect(waiter.outcomes).toEqual([{ noOpponent: true }])
+    const late = outcomeCapture()
+    expect(q.join('m2', 20_000, late.resolve)).toEqual({ paired: false }) // registers as a fresh waiter
+    expect(late.outcomes).toHaveLength(0)
   })
 
-  it('does not pair a joiner arriving after the 10s window even before expire() runs', () => {
+  it('a stale waiter displaced by a late joiner gets noOpponent — never a dead matchId', () => {
     const q = new ChessLobbyQueue()
-    q.join('m1', 0)
-    expect(q.join('m2', 10_001)).toEqual({ paired: false })
+    const stale = outcomeCapture()
+    q.join('m1', 0, stale.resolve)
+    const fresh = outcomeCapture()
+    expect(q.join('m2', 10_001, fresh.resolve)).toEqual({ paired: false }) // too late to pair with m1
+    expect(stale.outcomes).toEqual([{ noOpponent: true }]) // displaced waiter resolved honestly
+    q.expire('m1') // stale waiter's own timer fires afterward: must not double-resolve
+    expect(stale.outcomes).toHaveLength(1)
+    expect(fresh.outcomes).toHaveLength(0) // the new waiter is untouched
   })
 
-  it('expire() is a no-op once someone has already paired', () => {
+  it('expire() is a no-op once someone has already paired (never double-resolves)', () => {
     const q = new ChessLobbyQueue()
-    q.join('m1', 0)
-    q.join('m2', 1_000) // pairs, clears the waiter
-    expect(q.expire('m1')).toBe(false)
+    const waiter = outcomeCapture()
+    q.join('m1', 0, waiter.resolve)
+    q.join('m2', 1_000, outcomeCapture().resolve) // pairs, resolves + clears the waiter
+    q.expire('m1')
+    expect(waiter.outcomes).toEqual([{ matchId: 'm1' }]) // exactly once, from the pairing
   })
 })
 

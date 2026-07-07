@@ -198,6 +198,11 @@ export class ChessMatchDO implements DurableObject {
   }
 
   private applyAction(action: HostAction, mover: WebSocket | null): void {
+    // setAlarm/deleteAlarm are deliberately fire-and-forget (`void`): this runs
+    // inside synchronous WebSocket event handlers, and the DO runtime's
+    // input/output gating keeps the storage write ordered ahead of any later
+    // event for this object even without awaiting it. A rejection here would
+    // mean storage itself failed, at which point the runtime resets the DO.
     if (action.type === 'illegal') {
       mover?.close(1002, 'illegal move')
     } else if (action.type === 'moved') {
