@@ -1,8 +1,12 @@
 import type { CliOpts } from './cliArgs.js'
+import { runOffline } from './offline.js'
 
-// Scaffold-only stub (Task 8 scope): the offline game loop lands in Task 9
-// and the online flow in Task 10. This proves the scaffold wires end-to-end
-// (cliArgs -> main -> exit) without pretending to play a game yet.
+// Task 9 wires --offline to the real game loop. Online play lands in Task
+// 10 — until then, running without --offline falls back to offline play
+// (with a heads-up) rather than leaving main a dead end.
 export async function main(opts: CliOpts): Promise<void> {
-  console.log(`checkwait: scaffold ready (offline=${opts.offline}, difficulty=${opts.difficulty})`)
+  if (!opts.offline) {
+    console.log('checkwait: online play is not available yet (Task 10) — starting an offline game instead.\n')
+  }
+  await runOffline(opts)
 }

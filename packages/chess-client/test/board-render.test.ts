@@ -103,6 +103,34 @@ describe('renderBoard', () => {
   it('the render string is home-cursor based (starts with CSI H)', () => {
     expect(renderBoard(baseOpts()).startsWith('\x1b[H')).toBe(true)
   })
+
+  it('renders the opponent handle line when provided, blank when omitted', () => {
+    const withHandle = strip(renderBoard(baseOpts({ opponentHandle: 'bot·easy' })))
+    expect(withHandle).toContain('vs bot·easy')
+    const without = strip(renderBoard(baseOpts()))
+    expect(without).not.toContain('vs ')
+  })
+
+  it('renders the status line when provided (e.g. Claude-attention banner text)', () => {
+    const out = strip(renderBoard(baseOpts({ statusLine: '✔ Claude is done' })))
+    expect(out).toContain('✔ Claude is done')
+  })
+
+  it('renders the last ~8 SAN moves when sanHistory is provided, omitting the line when empty/absent', () => {
+    const out = strip(renderBoard(baseOpts({ sanHistory: ['e4', 'e5', 'Nf3'] })))
+    expect(out).toContain('e4 e5 Nf3')
+
+    const withoutHistory = strip(renderBoard(baseOpts()))
+    const withEmptyHistory = strip(renderBoard(baseOpts({ sanHistory: [] })))
+    expect(withoutHistory).toBe(withEmptyHistory)
+  })
+
+  it('truncates sanHistory display to the last 8 entries', () => {
+    const moves = Array.from({ length: 12 }, (_, i) => `m${i}`)
+    const out = strip(renderBoard(baseOpts({ sanHistory: moves })))
+    expect(out).toContain(moves.slice(-8).join(' '))
+    expect(out).not.toContain('m0 ')
+  })
 })
 
 describe('cellToSquare', () => {

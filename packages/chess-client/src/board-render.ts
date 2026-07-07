@@ -11,6 +11,11 @@ export interface RenderOpts {
   colorMode: 'truecolor' | 'basic'
   cols: number
   rows: number
+  // Task 9 additions (carried over from Task 8's review): game.ts maintains
+  // these and passes them in — the renderer itself is still pure/stateless.
+  sanHistory?: string[] // last ~8 SAN moves, oldest first; toSAN is called BEFORE applyMove
+  opponentHandle?: string // e.g. 'bot·easy' offline (Task 9's call — see game.ts); real handle online (Task 10)
+  statusLine?: string // Claude-attention banner / quit-confirm hint / typed-move buffer
 }
 
 const ESC = '\x1b'
@@ -109,14 +114,20 @@ function clockLine(state: ChessState, selfColor: Color): string {
   return `${selfMark} ${fmtClock(state.clocksMs[selfColor])}  ${oppMark} ${fmtClock(state.clocksMs[oppColor])}`
 }
 
-// RenderOpts carries no SAN move-list or opponent handle (those aren't part
-// of this task's produced interface), so the HUD's "last move" line shows
-// the coordinate pair (e.g. "e2-e4") rather than true SAN — SAN requires the
-// pre-move ChessState, which the renderer never receives. See board-render
-// section of task-8-report.md for the full rationale.
+// Coordinate pair (e.g. "last: e2-e4") rather than true SAN — SAN requires
+// the pre-move ChessState, which the renderer never receives (it only sees
+// a Move). See board-render section of task-8-report.md for the original
+// rationale; Task 9's sanHistory field (below) covers the SAN case instead.
 function lastMoveLine(lastMove: Move | null): string {
   if (!lastMove) return ''
   return `last: ${sqName(lastMove.from)}-${sqName(lastMove.to)}`
+}
+
+// Last ~8 SAN moves, space-separated. Sliced defensively here too, since the
+// field's contract ("last ~8") is game.ts's responsibility, not a hard type
+// invariant.
+function sanHistoryLine(sanHistory: string[]): string {
+  return sanHistory.slice(-8).join(' ')
 }
 
 function centerPad(s: string, width: number): string {
@@ -194,8 +205,9 @@ export function renderBoard(o: RenderOpts): string {
   lines.push('')
   lines.push(clockLine(o.state, o.selfColor))
   lines.push(lastMoveLine(o.lastMove))
-  lines.push('') // opponent-handle placeholder (not part of RenderOpts)
-  lines.push('') // status line placeholder for the Claude-attention text
+  lines.push(o.opponentHandle ? `vs ${o.opponentHandle}` : '')
+  lines.push(o.statusLine ?? '')
+  if (o.sanHistory && o.sanHistory.length > 0) lines.push(sanHistoryLine(o.sanHistory))
 
   return `${ESC}[H` + lines.join('\r\n') + RESET
 }

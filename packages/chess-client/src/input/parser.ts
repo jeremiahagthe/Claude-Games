@@ -51,7 +51,12 @@ export class KeyParser {
       if (ch === '\x03') out.push({ key: 'ctrl-c', kind: 'press' })
       else if (ch === '\x0d') out.push({ key: 'enter', kind: 'press' })
       else if (ch === '\x09') out.push({ key: 'tab', kind: 'press' })
-      else if (ch >= ' ' && ch <= '~') out.push({ key: ch.toLowerCase(), kind: 'press' })
+      // Task 9 divergence from the fragwait original: case is PRESERVED here
+      // (not lowercased) — chess SAN needs it (Nf3 vs a pawn's plain file
+      // letter), unlike fragwait's case-insensitive WASD controls. Callers
+      // that want case-insensitive comparison (quit's 'q', arrow-adjacent
+      // single-letter shortcuts) must lowercase the key themselves.
+      else if (ch >= ' ' && ch <= '~') out.push({ key: ch, kind: 'press' })
       // other control bytes: ignore
     }
     // cap only the unparseable remainder: a real partial sequence is <16 bytes,
