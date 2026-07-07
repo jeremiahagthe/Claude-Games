@@ -4,8 +4,9 @@ import type { ChessState } from 'checkwait-core'
 import { cellToSquare, renderBoard, type RenderOpts } from '../src/board-render.js'
 
 function strip(s: string): string {
+  // CSI SGR, OSC, and VT100 line attributes (ESC#n — feel chess-2 DECDWL/DECDHL)
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '')
+  return s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '').replace(/\x1b#[0-9]/g, '')
 }
 
 function baseOpts(overrides: Partial<RenderOpts> = {}): RenderOpts {
@@ -86,6 +87,42 @@ describe('renderBoard', () => {
     const lines = strip(out).split('\r\n')
     expect(lines.some((l) => l.length === 32)).toBe(true)
     expect(lines.some((l) => l.length === 48)).toBe(false)
+  })
+
+  // feel chess-2: double-size piece rows (DECDWL/DECDHL) on supporting terminals.
+  it('bigPieces: each rank is spacer + DECDHL top/bottom halves, same 24-line board', () => {
+    const out = renderBoard(baseOpts({ bigPieces: true }))
+    expect(out).toContain('\x1b#3')
+    expect(out).toContain('\x1b#4')
+    const lines = out.split('\r\n')
+    expect(lines.length).toBe(28) // 8 * (1 spacer + 2 half-rows) + 4 HUD — geometry unchanged
+    expect(lines.filter((l) => l.startsWith('\x1b#3')).length).toBe(8)
+    expect(lines.filter((l) => l.startsWith('\x1b#4')).length).toBe(8)
+    // top/bottom halves carry identical content so the glyph spans both rows
+    const top = lines.find((l) => l.startsWith('\x1b#3'))
+    const bottom = lines.find((l) => l.startsWith('\x1b#4'))
+    expect(top?.slice(3)).toBe(bottom?.slice(3))
+    // piece cells are cw/2 logical chars (double width = same visual columns)
+    const stripped = strip(out).split('\r\n')
+    expect(stripped.some((l) => l.length === 24)).toBe(true) // piece rows
+    expect(stripped.some((l) => l.length === 48)).toBe(true) // spacer rows
+  })
+
+  it('bigPieces is ignored in basic mode and NARROW cells (no DECDHL emitted)', () => {
+    const basic = renderBoard(baseOpts({ bigPieces: true, colorMode: 'basic' }))
+    expect(basic).not.toContain('\x1b#3')
+    const narrow = renderBoard(baseOpts({ bigPieces: true, cols: 59, rows: 22 }))
+    expect(narrow).not.toContain('\x1b#3')
+  })
+
+  it('non-double lines carry an explicit single-width attribute (ESC#5)', () => {
+    const out = renderBoard(baseOpts({ bigPieces: true }))
+    const lines = out.split('\r\n')
+    // stale double-height attributes must be impossible after resize
+    for (const l of lines) {
+      const isHalf = l.startsWith('\x1b#3') || l.startsWith('\x1b#4')
+      if (!isHalf) expect(l.includes('\x1b#5')).toBe(true)
+    }
   })
 
   it('never emits more lines than the terminal has rows', () => {

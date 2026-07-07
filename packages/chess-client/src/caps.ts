@@ -12,3 +12,13 @@ export function detectColorMode(env: Record<string, string | undefined>): ColorM
 export function viewSize(cols: number, rows: number): { viewCols: number; viewRows: number } {
   return { viewCols: Math.max(40, cols), viewRows: Math.max(12, rows - 3) }
 }
+
+// checkwait divergence (feel chess-2): double-size piece rows use VT100 line
+// attributes (DECDWL/DECDHL, ESC#3/#4). Only enabled on terminals known to
+// implement them — iTerm2 and Apple Terminal. kitty and alacritty
+// deliberately don't; tmux strips them; an unsupporting terminal would show
+// the piece row twice at single size (broken board), so default off.
+export function supportsDoubleSizePieces(env: Record<string, string | undefined>): boolean {
+  const p = env['TERM_PROGRAM'] ?? ''
+  return p === 'iTerm.app' || p === 'Apple_Terminal'
+}

@@ -11,7 +11,7 @@ import type { ChessDifficulty, ChessState, Color, Move } from 'checkwait-core'
 import { applyMove, fromFEN, legalMoves, parseMove, sanitizeHandle, sqName, toSAN } from 'checkwait-core'
 import { hostname } from 'node:os'
 import { cellToSquare, renderBoard } from './board-render.js'
-import { detectColorMode } from './caps.js'
+import { detectColorMode, supportsDoubleSizePieces } from './caps.js'
 import { startClaudeListener } from './claude.js'
 import { resultLine, runGame, teardownAndExit, type GameOpts } from './game.js'
 import { KeyParser } from './input/parser.js'
@@ -114,6 +114,7 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
   const parser = new KeyParser()
   const quitConfirm = new QuitConfirm(() => performance.now())
   const colorMode = detectColorMode(process.env) === 'truecolor' ? 'truecolor' : 'basic'
+  const bigPieces = supportsDoubleSizePieces(process.env)
 
   let cols = process.stdout.columns ?? 80
   let rows = process.stdout.rows ?? 24
@@ -147,6 +148,7 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
         lastMove,
         cursor: sel.cursor,
         colorMode,
+        bigPieces,
         cols,
         rows,
         sanHistory,
@@ -246,6 +248,7 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
             lastMove,
             cursor: null,
             colorMode,
+            bigPieces,
             cols,
             rows,
             sanHistory,

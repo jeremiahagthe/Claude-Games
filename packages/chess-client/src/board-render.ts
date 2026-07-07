@@ -16,6 +16,11 @@ export interface RenderOpts {
   sanHistory?: string[] // last ~8 SAN moves, oldest first; toSAN is called BEFORE applyMove
   opponentHandle?: string // e.g. 'bot·easy' offline (Task 9's call — see game.ts); real handle online (Task 10)
   statusLine?: string // Claude-attention banner / quit-confirm hint / typed-move buffer
+  // feel chess-2: render piece rows at double width+height via DECDWL/DECDHL
+  // (ESC#3/#4) so glyphs fill their squares. Callers gate this on
+  // caps.supportsDoubleSizePieces — unsupporting terminals would draw the
+  // piece row twice at single size. Only takes effect in truecolor + WIDE.
+  bigPieces?: boolean
 }
 
 const ESC = '\x1b'
@@ -162,10 +167,55 @@ export function renderBoard(o: RenderOpts): string {
   const kingSquare = inCheck ? findKingSquare(o.state, o.state.turn) : null
 
   const lines: string[] = []
+  // Double-size piece rows need DECDWL/DECDHL (gated by the caller) and only
+  // make sense in truecolor WIDE cells (NARROW has no spacer row to give up).
+  const big = o.bigPieces === true && o.colorMode === 'truecolor' && ch === WIDE.ch
+  // Lines that are NOT double get an explicit single-width attribute so a
+  // resize/mode change can never leave a stale double-height line behind.
+  const SINGLE = `${ESC}#5`
 
   for (const rank of ranks) {
+    if (big) {
+      // 3 screen rows per rank: 1 normal spacer + the piece row twice as
+      // DECDHL top/bottom halves. Piece row cells are cw/2 logical chars —
+      // double width makes them the same cw visual columns as the spacer,
+      // so cellToSquare's geometry is unchanged.
+      let spacer = ''
+      let pieceRow = ''
+      for (const file of files) {
+        const idx = rank * 8 + file
+        const piece = o.state.board[idx]
+        const isLight = (file + rank) % 2 === 1
+        const isSelected = o.selected === idx
+        const isCheck = kingSquare === idx
+        const isLastMove = !!o.lastMove && (o.lastMove.from === idx || o.lastMove.to === idx)
+        const isLegal = legalSet.has(idx)
+        const isCursor = o.cursor === idx
+        const rgb = isSelected
+          ? SELECTED_RGB
+          : isCheck
+            ? CHECK_RGB
+            : isLastMove
+              ? LAST_MOVE_RGB
+              : isLegal
+                ? LEGAL_RGB
+                : isLight
+                  ? LIGHT_RGB
+                  : DARK_RGB
+        spacer += bg(rgb, isCursor) + ' '.repeat(cw) + RESET
+        let cellText = ' '.repeat(cw / 2)
+        if (piece) cellText = centerPad(pieceGlyph(piece.type), cw / 2)
+        else if (isLegal) cellText = centerPad('•', cw / 2)
+        const pieceFg = piece ? fg(piece.color === 'w' ? WHITE_PIECE_RGB : BLACK_PIECE_RGB) : ''
+        pieceRow += bg(rgb, isCursor) + pieceFg + cellText + RESET
+      }
+      lines.push(SINGLE + spacer)
+      lines.push(`${ESC}#3` + pieceRow)
+      lines.push(`${ESC}#4` + pieceRow)
+      continue
+    }
     for (let subRow = 0; subRow < ch; subRow++) {
-      let line = ''
+      let line = SINGLE
       for (const file of files) {
         const idx = rank * 8 + file
         const piece = o.state.board[idx]
@@ -221,10 +271,10 @@ export function renderBoard(o: RenderOpts): string {
 
   // Compact 4-line HUD (feel-1): SAN history when available, else the
   // coordinate last-move line — never both, so WIDE + HUD fits 28 rows.
-  lines.push(clockLine(o.state, o.selfColor))
-  lines.push(o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove))
-  lines.push(o.opponentHandle ? `vs ${o.opponentHandle}` : '')
-  lines.push(o.statusLine ?? '')
+  lines.push(SINGLE + clockLine(o.state, o.selfColor))
+  lines.push(SINGLE + (o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove)))
+  lines.push(SINGLE + (o.opponentHandle ? `vs ${o.opponentHandle}` : ''))
+  lines.push(SINGLE + (o.statusLine ?? ''))
 
   // Never emit more lines than the terminal has — overflow scrolls the TOP
   // rank off (feel-1). Drop HUD tail lines, never board rows.
