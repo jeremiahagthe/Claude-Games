@@ -1,9 +1,12 @@
 // Shared game loop: TerminalSession enter, input parsing, selectStep, local
 // applyMove + tickClock, redraw, Claude listener banner, quit confirm, end
 // screen, share card. Task 9 wires this to a synchronous bot opponent
-// (offline.ts); Task 10's online flow is expected to grow its own thin shell
-// around the same selectStep/render building blocks — this module stays
-// offline-only for now (see task-9-report.md for the scope call).
+// (offline.ts). Task 10's online flow (online.ts) grows its own thin shell
+// around the same selectStep/render/quit/dismiss/share building blocks
+// instead of reusing runGame verbatim — its moves are server-relay events
+// rather than a synchronous local apply, so the loop bodies genuinely
+// differ (see task-9-report.md for the original scope call, task-10-report.md
+// for why online didn't fold into this function).
 import type { ChessDifficulty, ChessState, Color, Move, Result } from 'checkwait-core'
 import { DIFFICULTY_BUDGETS, applyMove, bestMove, initialState, legalMoves, tickClock, toSAN } from 'checkwait-core'
 import { cellToSquare, renderBoard } from './board-render.js'
@@ -30,7 +33,9 @@ export interface GameOpts {
   seed?: number
 }
 
-function resultLine(result: Result, selfColor: Color): string {
+// Exported for online.ts's own finished-game screen (Task 10) — same
+// win/loss/draw phrasing offline and online.
+export function resultLine(result: Result, selfColor: Color): string {
   if ('winner' in result) {
     const you = result.winner === selfColor
     const reason = result.kind === 'flag' ? 'on time' : result.kind === 'checkmate' ? 'by checkmate' : 'by resignation'

@@ -6,5 +6,5 @@
   "bin": { "checkwait": "bin/checkwait.js" },
   "files": ["dist", "bin"],
   "scripts": { "build": "tsc -p tsconfig.json" },
-  "dependencies": { "checkwait-core": "0.0.0" }
+  "dependencies": { "checkwait-core": "0.0.0", "ws": "8.21.0" }
 }
