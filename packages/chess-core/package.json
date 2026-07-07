@@ -1,6 +1,6 @@
 {
   "name": "checkwait-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "checkwait chess rules engine: board state, FEN, movegen, bot, protocol",
   "type": "module",
   "license": "MIT",
