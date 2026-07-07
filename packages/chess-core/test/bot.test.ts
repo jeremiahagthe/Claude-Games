@@ -95,16 +95,25 @@ describe('bestMove: determinism', () => {
 })
 
 describe('bestMoveWithNodes: node budget respected', () => {
-  it('never evaluates more nodes than the budget allows a completed depth to exceed marginally', () => {
-    const s = fromFEN(HANGING_QUEEN)
-    const budget = 200
-    const { nodes } = bestMoveWithNodes(s, budget, 1)
-    // The search stops iterative deepening once a depth's node count would
-    // exceed the budget; it does not abort mid-depth, so the final count can
-    // exceed budget by at most one full extra depth's worth of nodes. We
-    // assert a generous but meaningful upper bound.
-    expect(nodes).toBeGreaterThan(0)
-    expect(nodes).toBeLessThan(budget * 50)
+  // Bound rationale: every negamax entry (the only place the node counter
+  // increments) is gated by a `nodes.count >= budget` check at its call
+  // site — both in the root loop and inside negamax's own move loop — so
+  // the counter can reach exactly `budget` but never exceed it. Profiled
+  // across 5 positions x 8 budgets (50..4000) x 5 seeds: max observed
+  // overshoot was 0. Pinning the exact invariant (nodes <= budget) so any
+  // future budget-enforcement regression fails immediately.
+  it('never evaluates more nodes than the budget (hard invariant, profiled overshoot = 0)', () => {
+    const positions = [HANGING_QUEEN, MATE_IN_1, 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1']
+    for (const fen of positions) {
+      const s = fromFEN(fen)
+      for (const budget of [50, 200, 1_200]) {
+        for (const seed of [1, 7, 42]) {
+          const { nodes } = bestMoveWithNodes(s, budget, seed)
+          expect(nodes).toBeGreaterThan(0)
+          expect(nodes).toBeLessThanOrEqual(budget)
+        }
+      }
+    }
   })
 
   it('returns a move and matching nodes count from the same search', () => {

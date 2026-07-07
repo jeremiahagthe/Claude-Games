@@ -226,7 +226,6 @@ export function bestMoveWithNodes(s: ChessState, budget: number, seed: number): 
 
   const nodes = { count: 0 }
   let bestMoveSoFar: Move = ordered[0]!
-  let lastCompletedBestMove: Move = ordered[0]!
 
   for (let depth = 1; depth <= 64; depth++) {
     const nodesBeforeDepth = nodes.count
@@ -256,7 +255,6 @@ export function bestMoveWithNodes(s: ChessState, budget: number, seed: number): 
       break
     }
 
-    lastCompletedBestMove = depthBest
     bestMoveSoFar = depthBest
     if (nodes.count >= budget) break
     // Avoid re-searching once we've found forced mate — no need to go deeper.
@@ -264,7 +262,7 @@ export function bestMoveWithNodes(s: ChessState, budget: number, seed: number): 
     if (nodesBeforeDepth === nodes.count) break // safety: no progress possible
   }
 
-  return { move: bestMoveSoFar ?? lastCompletedBestMove, nodes: nodes.count }
+  return { move: bestMoveSoFar, nodes: nodes.count }
 }
 
 /** Convenience wrapper over {@link bestMoveWithNodes} that returns only the move. */
