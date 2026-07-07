@@ -21,23 +21,34 @@ export interface RenderOpts {
 const ESC = '\x1b'
 const RESET = `${ESC}[0m`
 
-// Lichess-style board pair, pinned.
-const LIGHT_RGB: readonly [number, number, number] = [240, 217, 181] // #f0d9b5
-const DARK_RGB: readonly [number, number, number] = [181, 136, 99] // #b58863
-const SELECTED_RGB: readonly [number, number, number] = [246, 246, 105] // #f6f669
+// Mid-tone board pair (feel-1): every square must contrast BOTH piece
+// foregrounds below — the original lichess pair (#f0d9b5 light) made white
+// pieces invisible on light squares (default terminal fg, no explicit color).
+const LIGHT_RGB: readonly [number, number, number] = [181, 136, 99] // #b58863
+const DARK_RGB: readonly [number, number, number] = [122, 79, 40] // #7a4f28
+const SELECTED_RGB: readonly [number, number, number] = [125, 143, 77] // #7d8f4d olive — mid-tone so a selected white piece stays visible
 const LEGAL_RGB: readonly [number, number, number] = [130, 151, 105] // muted green tint
-const LAST_MOVE_RGB: readonly [number, number, number] = [205, 210, 106] // #cdd26a
+const LAST_MOVE_RGB: readonly [number, number, number] = [163, 168, 79] // #a3a84f
 const CHECK_RGB: readonly [number, number, number] = [224, 82, 82] // #e05252
+// Piece foregrounds (feel-1): side is carried by color, not glyph shape.
+const WHITE_PIECE_RGB: readonly [number, number, number] = [255, 255, 255]
+const BLACK_PIECE_RGB: readonly [number, number, number] = [20, 20, 20] // #141414
 
 function bg(rgb: readonly [number, number, number], underline: boolean): string {
   return underline ? `${ESC}[4;48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : `${ESC}[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
 }
 
-const WHITE_GLYPHS: Record<PieceType, string> = { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙' }
-const BLACK_GLYPHS: Record<PieceType, string> = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
+function fg(rgb: readonly [number, number, number]): string {
+  return `${ESC}[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
+}
 
-function pieceGlyph(type: PieceType, color: Color): string {
-  return color === 'w' ? WHITE_GLYPHS[type] : BLACK_GLYPHS[type]
+// Truecolor mode uses the FILLED glyph set for BOTH sides (feel-1): the
+// outline set (♔♙…) is thin line-art that renders faint in most terminal
+// fonts; solid shapes + explicit fg color carry the side unambiguously.
+const FILLED_GLYPHS: Record<PieceType, string> = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
+
+function pieceGlyph(type: PieceType): string {
+  return FILLED_GLYPHS[type]
 }
 
 // FEN-style letter: uppercase = white, lowercase = black (basic/mono mode —
@@ -53,8 +64,13 @@ interface CellGeometry {
 
 const WIDE: CellGeometry = { cw: 6, ch: 3 }
 const NARROW: CellGeometry = { cw: 4, ch: 2 }
+// HUD is 4 lines (clock, san/last-move, opponent, status). WIDE needs
+// 8*3 + 4 = 28 rows — the frame must FIT the terminal or the top rank
+// scrolls off (feel-1: rank 8 was clipped at the spec-recommended 100x28
+// because the old threshold only fell back below 22 rows).
+export const HUD_LINES = 4
 const FALLBACK_COLS = 60
-const FALLBACK_ROWS = 22
+const FALLBACK_ROWS = 8 * WIDE.ch + HUD_LINES // 28
 
 export function cellSize(cols: number, rows: number): CellGeometry {
   return cols < FALLBACK_COLS || rows < FALLBACK_ROWS ? NARROW : WIDE
@@ -164,7 +180,7 @@ export function renderBoard(o: RenderOpts): string {
         let cellText = ' '.repeat(cw)
         if (middleRow) {
           if (piece) {
-            const glyph = o.colorMode === 'truecolor' ? pieceGlyph(piece.type, piece.color) : pieceLetter(piece.type, piece.color)
+            const glyph = o.colorMode === 'truecolor' ? pieceGlyph(piece.type) : pieceLetter(piece.type, piece.color)
             cellText = centerPad(glyph, cw)
           } else if (isLegal) {
             cellText = centerPad('•', cw)
@@ -183,7 +199,8 @@ export function renderBoard(o: RenderOpts): string {
                   : isLight
                     ? LIGHT_RGB
                     : DARK_RGB
-          line += bg(rgb, isCursor) + cellText + RESET
+          const pieceFg = middleRow && piece ? fg(piece.color === 'w' ? WHITE_PIECE_RGB : BLACK_PIECE_RGB) : ''
+          line += bg(rgb, isCursor) + pieceFg + cellText + RESET
         } else {
           // basic mode: reverse-video checkering; highlights layer SGR codes
           // on top (pinned, in priority order: selected > check > last-move > legal).
@@ -202,12 +219,18 @@ export function renderBoard(o: RenderOpts): string {
     }
   }
 
-  lines.push('')
+  // Compact 4-line HUD (feel-1): SAN history when available, else the
+  // coordinate last-move line — never both, so WIDE + HUD fits 28 rows.
   lines.push(clockLine(o.state, o.selfColor))
-  lines.push(lastMoveLine(o.lastMove))
+  lines.push(o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove))
   lines.push(o.opponentHandle ? `vs ${o.opponentHandle}` : '')
   lines.push(o.statusLine ?? '')
-  if (o.sanHistory && o.sanHistory.length > 0) lines.push(sanHistoryLine(o.sanHistory))
 
-  return `${ESC}[H` + lines.join('\r\n') + RESET
+  // Never emit more lines than the terminal has — overflow scrolls the TOP
+  // rank off (feel-1). Drop HUD tail lines, never board rows.
+  const fitted = lines.slice(0, Math.max(1, o.rows))
+
+  // Trailing clear-below kills residue when the frame shrinks (resize,
+  // WIDE→NARROW) — the renderer never scrolls, so this is always safe.
+  return `${ESC}[H` + fitted.join('\r\n') + RESET + `${ESC}[J`
 }

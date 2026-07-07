@@ -30,10 +30,17 @@ describe('renderBoard', () => {
     expect(out).toContain('○ 3:00')
   })
 
-  it('renders a known piece glyph for the start position (white king, truecolor)', () => {
+  // feel-1: truecolor uses the FILLED glyph set for both sides (outline set
+  // rendered faint) — side is carried by explicit piece foreground colors.
+  const WHITE_FG = '\x1b[38;2;255;255;255m'
+  const BLACK_FG = '\x1b[38;2;20;20;20m'
+
+  it('renders filled glyphs with per-side piece foregrounds (truecolor)', () => {
     const out = renderBoard(baseOpts())
-    expect(out).toContain('♔')
     expect(out).toContain('♚')
+    expect(out).not.toContain('♔') // outline set retired in feel-1
+    expect(out).toContain(WHITE_FG)
+    expect(out).toContain(BLACK_FG)
   })
 
   it('renders letter pieces in basic mode (uppercase = white)', () => {
@@ -42,19 +49,22 @@ describe('renderBoard', () => {
     expect(out).toContain('k')
   })
 
-  it('white perspective: black king (rank 8) is drawn above white king (rank 1)', () => {
+  // Orientation is asserted via piece FOREGROUNDS now that both sides share
+  // the filled glyph set (feel-1): the first piece drawn top-left is black's
+  // back rank for white, white's for black.
+  it('white perspective: black pieces (rank 8) are drawn above white pieces (rank 1)', () => {
     const out = renderBoard(baseOpts({ selfColor: 'w' }))
-    expect(out.indexOf('♚')).toBeLessThan(out.indexOf('♔'))
+    expect(out.indexOf(BLACK_FG)).toBeLessThan(out.indexOf(WHITE_FG))
   })
 
-  it('black perspective: the board is flipped — white king now drawn above black king', () => {
+  it('black perspective: the board is flipped — white pieces now drawn above black pieces', () => {
     const out = renderBoard(baseOpts({ selfColor: 'b' }))
-    expect(out.indexOf('♔')).toBeLessThan(out.indexOf('♚'))
+    expect(out.indexOf(WHITE_FG)).toBeLessThan(out.indexOf(BLACK_FG))
   })
 
-  it('emits the pinned selected-square SGR background (#f6f669) when a square is selected', () => {
+  it('emits the pinned selected-square SGR background (#7d8f4d — mid-tone so white pieces stay visible)', () => {
     const out = renderBoard(baseOpts({ selected: 12 })) // e2
-    expect(out).toContain('\x1b[48;2;246;246;105m')
+    expect(out).toContain('\x1b[48;2;125;143;77m')
   })
 
   it('emits the pinned legal-target SGR background for legal target squares', () => {
@@ -63,9 +73,26 @@ describe('renderBoard', () => {
     expect(out).toContain('•')
   })
 
-  it('emits the pinned last-move SGR background (#cdd26a) for from/to squares', () => {
+  it('emits the pinned last-move SGR background (#a3a84f) for from/to squares', () => {
     const out = renderBoard(baseOpts({ lastMove: { from: 12, to: 28 } }))
-    expect(out).toContain('\x1b[48;2;205;210;106m')
+    expect(out).toContain('\x1b[48;2;163;168;79m')
+  })
+
+  // feel-1 frame-fit rules: the top rank scrolled off at the recommended
+  // 100x28 because WIDE (24 board lines) + HUD exceeded the old 22-row
+  // fallback threshold; and any overflow must drop HUD lines, never scroll.
+  it('falls back to 4x2 cells when rows < 28 even with plenty of columns', () => {
+    const out = renderBoard(baseOpts({ cols: 100, rows: 27 }))
+    const lines = strip(out).split('\r\n')
+    expect(lines.some((l) => l.length === 32)).toBe(true)
+    expect(lines.some((l) => l.length === 48)).toBe(false)
+  })
+
+  it('never emits more lines than the terminal has rows', () => {
+    const out = renderBoard(baseOpts({ cols: 100, rows: 28 }))
+    expect(strip(out).split('\r\n').length).toBeLessThanOrEqual(28)
+    const narrow = renderBoard(baseOpts({ cols: 59, rows: 18 }))
+    expect(strip(narrow).split('\r\n').length).toBeLessThanOrEqual(18)
   })
 
   it('emits the pinned check SGR background (#e05252) on the checked king square', () => {
