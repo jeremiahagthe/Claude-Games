@@ -174,6 +174,10 @@ export async function runGame(opts: GameOpts): Promise<void> {
   const onResize = () => {
     cols = process.stdout.columns ?? 80
     rows = process.stdout.rows ?? 24
+    // Full clear before the first frame at the new size: redraw alone only
+    // overwrites the new frame's footprint, leaving old-frame residue when
+    // the terminal grew (feel chess-4: mixed-size board corruption).
+    term.write('\x1b[2J')
     redraw()
   }
   process.stdout.on('resize', onResize)

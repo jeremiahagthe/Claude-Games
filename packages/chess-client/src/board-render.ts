@@ -35,6 +35,14 @@ const WHITE_PIECE_RGB: readonly [number, number, number] = [255, 255, 255]
 const BLACK_PIECE_RGB: readonly [number, number, number] = [20, 20, 20] // #141414
 const DOT_RGB: readonly [number, number, number] = [235, 235, 235] // legal-move dot on empty squares
 
+// Keyboard cursor in sprite mode: a lifted square background instead of the
+// underline attribute — underlining a square full of spaces/half-blocks
+// draws stray horizontal streaks through the sprite (feel chess-4).
+const CURSOR_LIFT = 36
+function lift(rgb: readonly [number, number, number]): readonly [number, number, number] {
+  return [Math.min(255, rgb[0] + CURSOR_LIFT), Math.min(255, rgb[1] + CURSOR_LIFT), Math.min(255, rgb[2] + CURSOR_LIFT)]
+}
+
 function bg(rgb: readonly [number, number, number], underline: boolean): string {
   return underline ? `${ESC}[4;48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : `${ESC}[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
 }
@@ -316,7 +324,7 @@ export function renderBoard(o: RenderOpts): string {
               spr = sprite('dot', DOT_MASK, cw, ch)
               sprFg = fg(DOT_RGB)
             }
-            let cell = bg(rgb, isCursor)
+            let cell = bg(isCursor ? lift(rgb) : rgb, false)
             const topRow = spr?.[2 * subRow]
             const botRow = spr?.[2 * subRow + 1]
             for (let x = 0; x < cw; x++) {
@@ -362,17 +370,24 @@ export function renderBoard(o: RenderOpts): string {
 
   // Compact 4-line HUD (feel-1): SAN history when available, else the
   // coordinate last-move line — never both, so board + HUD fits the rows
-  // budget cellSize() sized the squares against.
-  lines.push(clockLine(o.state, o.selfColor))
-  lines.push(o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove))
-  lines.push(o.opponentHandle ? `vs ${o.opponentHandle}` : '')
-  lines.push(o.statusLine ?? '')
+  // budget cellSize() sized the squares against. Each HUD line is truncated
+  // to the terminal width — a wrapped line would scroll the whole frame
+  // (feel chess-4). When the window is too small for sprite pieces, the
+  // status line doubles as the how-to-fix hint.
+  const hint = o.colorMode === 'truecolor' && !sprites ? 'enlarge the window for bigger pieces' : ''
+  const hudWidth = Math.max(1, o.cols - 1)
+  lines.push(clockLine(o.state, o.selfColor).slice(0, hudWidth))
+  lines.push((o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove)).slice(0, hudWidth))
+  lines.push((o.opponentHandle ? `vs ${o.opponentHandle}` : '').slice(0, hudWidth))
+  lines.push((o.statusLine || hint).slice(0, hudWidth))
 
   // Never emit more lines than the terminal has — overflow scrolls the TOP
   // rank off (feel-1). Drop HUD tail lines, never board rows.
   const fitted = lines.slice(0, Math.max(1, o.rows))
 
-  // Trailing clear-below kills residue when the frame shrinks (resize,
-  // WIDE→NARROW) — the renderer never scrolls, so this is always safe.
-  return `${ESC}[H` + fitted.join('\r\n') + RESET + `${ESC}[J`
+  // Per-line clear-to-EOL (ESC[K) kills residue to the RIGHT of each line
+  // when the frame narrows mid-resize; trailing clear-below (ESC[J) kills
+  // residue when it shrinks vertically — the renderer never scrolls, so
+  // both are always safe (feel chess-4: mixed-size frame corruption).
+  return `${ESC}[H` + fitted.join(`${ESC}[K\r\n`) + RESET + `${ESC}[J`
 }

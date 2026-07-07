@@ -4,9 +4,9 @@ import type { ChessState } from 'checkwait-core'
 import { cellToSquare, renderBoard, type RenderOpts } from '../src/board-render.js'
 
 function strip(s: string): string {
-  // CSI SGR, cursor-home/clear (ESC[H / ESC[J), and OSC sequences
+  // CSI SGR, cursor-home/clear (ESC[H / ESC[J / ESC[K), and OSC sequences
   // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*[mHJ]/g, '').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '')
+  return s.replace(/\x1b\[[0-9;]*[mHJK]/g, '').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g, '')
 }
 
 function baseOpts(overrides: Partial<RenderOpts> = {}): RenderOpts {
@@ -121,6 +121,34 @@ describe('renderBoard', () => {
   it('sprite mode never emits VT100 line attributes (feel chess-2 DECDHL retired)', () => {
     const out = renderBoard(baseOpts())
     expect(out).not.toContain('\x1b#')
+  })
+
+  // feel chess-4 hardening: resize residue and sprite-mode cursor.
+  it('every line ends with clear-to-EOL so a narrowing frame leaves no right-side residue', () => {
+    const out = renderBoard(baseOpts())
+    expect(out).toContain('\x1b[K\r\n')
+    // one ESC[K per line boundary (rows-1 joins at 80x30 → 27)
+    expect(out.split('\x1b[K\r\n').length).toBe(28)
+  })
+
+  it('sprite-mode cursor lifts the square background instead of underlining (no streaks)', () => {
+    const out = renderBoard(baseOpts({ cursor: 0 })) // a1, dark square [122,79,40]
+    expect(out).not.toContain('\x1b[4;48') // underline attr retired in sprite mode
+    expect(out).toContain('\x1b[48;2;158;115;76m') // DARK + 36 lift
+  })
+
+  it('shows the enlarge-window hint in truecolor NARROW when no status line is set', () => {
+    const narrow = strip(renderBoard(baseOpts({ cols: 59, rows: 22 })))
+    expect(narrow).toContain('enlarge the window for bigger pieces')
+    const wide = strip(renderBoard(baseOpts()))
+    expect(wide).not.toContain('enlarge')
+    const withStatus = strip(renderBoard(baseOpts({ cols: 59, rows: 22, statusLine: '> h' })))
+    expect(withStatus).not.toContain('enlarge')
+  })
+
+  it('truncates HUD lines to the terminal width (a wrapped line would scroll the frame)', () => {
+    const out = strip(renderBoard(baseOpts({ cols: 60, rows: 30, opponentHandle: 'x'.repeat(200) })))
+    for (const l of out.split('\r\n')) expect(l.length).toBeLessThan(60)
   })
 
   it('never emits more lines than the terminal has rows', () => {
