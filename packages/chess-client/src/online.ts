@@ -1,20 +1,22 @@
 // Online flow: POST /chess/join → matched (ws handshake) or noOpponent/any
 // failure → single fallback path through game.ts's synchronous bot loop.
-// Once matched, this module runs its OWN loop (not runGame) — moves are
-// server-relay events (both the player's own move and the opponent's arrive
-// the same way, via the 'move' message) rather than a synchronous local
-// apply, so the input/redraw wiring genuinely differs from offline's.
+// Once matched, this module runs its OWN loop body (not runGame) because
+// move APPLICATION genuinely differs — both the player's own move and the
+// opponent's arrive as server 'move' relay events rather than a synchronous
+// local apply. Everything that is identical by design is shared instead:
+// raw-input translation lives in input/translate.ts (with the online-only
+// inputLocked gate) and the finished-screen/teardown tail is game.ts's
+// teardownAndExit.
 import type { ChessDifficulty, ChessState, Color, Move } from 'checkwait-core'
 import { applyMove, fromFEN, legalMoves, parseMove, sanitizeHandle, sqName, toSAN } from 'checkwait-core'
 import { hostname } from 'node:os'
 import { cellToSquare, renderBoard } from './board-render.js'
 import { detectColorMode } from './caps.js'
 import { startClaudeListener } from './claude.js'
-import { resultLine, type GameOpts } from './game.js'
-import { runGame } from './game.js'
-import { waitForPress } from './input/dismiss.js'
+import { resultLine, runGame, teardownAndExit, type GameOpts } from './game.js'
 import { KeyParser } from './input/parser.js'
 import { QuitConfirm } from './input/quit.js'
+import { createInputTranslator } from './input/translate.js'
 import { ChessNetClient, joinChessLobby } from './net.js'
 import { INITIAL_SELECT_STATE, selectStep, type SelectEvent, type SelectState } from './select.js'
 import { shareCard } from './share.js'
@@ -26,8 +28,6 @@ export interface OnlineOpts {
   difficulty: ChessDifficulty
 }
 
-const MOVE_CHARS = /^[a-hA-H1-8KQRBNOx=+#-]$/
-const TYPED_BUFFER_MAX = 10
 const REDRAW_MS = 100 // 10fps
 
 function moveToCoord(m: Move): string {
@@ -119,7 +119,6 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
   let rows = process.stdout.rows ?? 24
   let sel: SelectState = INITIAL_SELECT_STATE
   let banner: string | null = null
-  let typedBuffer = ''
   let quit = false
 
   function currentStatusLine(): string {
@@ -127,7 +126,7 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
     if (sel.pendingPromotion) return 'promote: (q)ueen (r)ook (b)ishop k(n)ight'
     if (banner) return banner
     if (awaitingAck) return 'sending…'
-    if (typedBuffer.length > 0) return `> ${typedBuffer}`
+    if (input.typed.length > 0) return `> ${input.typed}`
     return ''
   }
 
@@ -186,66 +185,19 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
   }
   process.stdout.on('resize', onResize)
 
-  const onData = (chunk: Buffer) => {
-    for (const e of parser.feed(chunk)) {
-      if ('type' in e) {
-        if (e.action === 'press' && e.button === 'left') {
-          const square = cellToSquare(e.x, e.y, cols, rows, selfColor)
-          if (square !== null) dispatch({ kind: 'click', square })
-        }
-        continue
-      }
-      if (e.kind !== 'press') continue
-      const key = e.key
-      const lower = key.toLowerCase()
-
-      if (lower === 'ctrl-c') { quit = true; continue } // instant escape hatch, never confirm-gated
-
-      if (sel.pendingPromotion && (lower === 'q' || lower === 'r' || lower === 'b' || lower === 'n')) {
-        dispatch({ kind: 'promo', piece: lower as 'q' | 'r' | 'b' | 'n' })
-        continue
-      }
-
-      if (lower === 'esc') {
-        if (typedBuffer.length > 0) { typedBuffer = ''; redraw(); continue }
-        if (banner && !quitConfirm.armed) { banner = null; redraw(); continue }
-        quit = quitConfirm.request()
-        redraw()
-        continue
-      }
-      if (lower === 'q' && typedBuffer.length === 0) {
-        quit = quitConfirm.request()
-        redraw()
-        continue
-      }
-      if (awaitingAck) continue // move in flight: no board input until it's acked
-
-      if (key === 'up' || key === 'down' || key === 'left' || key === 'right') {
-        dispatch({ kind: 'cursor', dir: key })
-        continue
-      }
-      if (lower === 'enter') {
-        if (typedBuffer.length > 0) {
-          const text = typedBuffer
-          typedBuffer = ''
-          dispatch({ kind: 'typed', text })
-        } else {
-          dispatch({ kind: 'enter' })
-        }
-        continue
-      }
-      if (lower === 'backspace') {
-        typedBuffer = typedBuffer.slice(0, -1)
-        redraw()
-        continue
-      }
-      if (MOVE_CHARS.test(key) && typedBuffer.length < TYPED_BUFFER_MAX) {
-        typedBuffer += key
-        redraw()
-      }
-    }
-  }
-  process.stdin.on('data', onData)
+  const input = createInputTranslator(parser, {
+    dispatch,
+    redraw,
+    squareAt: (x, y) => cellToSquare(x, y, cols, rows, selfColor),
+    hasPendingPromotion: () => sel.pendingPromotion !== null,
+    hasBanner: () => banner !== null,
+    clearBanner: () => { banner = null },
+    quitArmed: () => quitConfirm.armed,
+    requestQuit: () => { quit = quitConfirm.request(); redraw() },
+    instantQuit: () => { quit = true },
+    inputLocked: () => awaitingAck, // online-only gate: move in flight, board input suspended (quit still works)
+  })
+  process.stdin.on('data', input.onData)
 
   term.enter()
   term.installExitGuards(() => net.close())
@@ -262,39 +214,46 @@ export async function runOnline(opts: OnlineOpts): Promise<void> {
     }, REDRAW_MS)
   })
 
-  process.stdin.off('data', onData)
+  process.stdin.off('data', input.onData)
   process.stdout.off('resize', onResize)
 
   if (quit) net.resign()
 
+  // End precedence: the server's `end` message wins over any locally-detected
+  // state.result — the end carries the authoritative final FEN + result
+  // (e.g. a flag the local clock display never saw, or a resign), while a
+  // local result is only ever the byproduct of applying the server's own
+  // relayed moves, so the two can't meaningfully disagree; `ended` is simply
+  // the more complete record when both exist.
   const finalState: ChessState | null = ended.value ? ended.value.state : state.result ? state : null
-  const finished = finalState !== null
-  if (finished) {
-    state = finalState
-    term.write(
-      renderBoard({
-        state,
-        selfColor,
-        selected: null,
-        legalTargets: [],
-        lastMove,
-        cursor: null,
-        colorMode,
-        cols,
-        rows,
-        sanHistory,
-        opponentHandle,
-        statusLine: `${resultLine(state.result!, selfColor)} — press any key`,
-      }),
-    )
-    await waitForPress(process.stdin, parser)
-  }
-
-  await listener.close()
-  net.close()
-  term.restore()
-  if (finished) {
-    process.stdout.write('\n' + shareCard(state.result!, selfColor, sanHistory.length, opponentHandle))
-  }
-  process.exit(0)
+  if (finalState) state = finalState
+  await teardownAndExit({
+    term,
+    parser,
+    listener,
+    beforeRestore: () => net.close(),
+    finale: finalState
+      ? {
+          // Note: the clocks shown here are the last authoritative snapshot,
+          // not ticked to the moment of the end — on a flag the loser's clock
+          // may display a few hundred ms above 0:00. Cosmetic only; the
+          // server's result is what's announced.
+          screen: renderBoard({
+            state,
+            selfColor,
+            selected: null,
+            legalTargets: [],
+            lastMove,
+            cursor: null,
+            colorMode,
+            cols,
+            rows,
+            sanHistory,
+            opponentHandle,
+            statusLine: `${resultLine(state.result!, selfColor)} — press any key`,
+          }),
+          shareText: shareCard(state.result!, selfColor, sanHistory.length, opponentHandle),
+        }
+      : null,
+  })
 }

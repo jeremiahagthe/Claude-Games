@@ -1,12 +1,12 @@
-// Shared game loop: TerminalSession enter, input parsing, selectStep, local
-// applyMove + tickClock, redraw, Claude listener banner, quit confirm, end
-// screen, share card. Task 9 wires this to a synchronous bot opponent
-// (offline.ts). Task 10's online flow (online.ts) grows its own thin shell
-// around the same selectStep/render/quit/dismiss/share building blocks
-// instead of reusing runGame verbatim — its moves are server-relay events
-// rather than a synchronous local apply, so the loop bodies genuinely
-// differ (see task-9-report.md for the original scope call, task-10-report.md
-// for why online didn't fold into this function).
+// Offline game loop: TerminalSession enter, selectStep, local applyMove +
+// tickClock, redraw, Claude listener banner, quit confirm, end screen, share
+// card. Task 9 wires this to a synchronous bot opponent (offline.ts).
+// Task 10's online flow (online.ts) keeps its own loop BODY (its moves are
+// server-relay events rather than a synchronous local apply) but shares the
+// parts that are identical by design: raw-input translation lives in
+// input/translate.ts and the finished-screen/teardown tail is exported from
+// here as teardownAndExit — change key bindings or the exit sequence in
+// those shared spots, never per-loop.
 import type { ChessDifficulty, ChessState, Color, Move, Result } from 'checkwait-core'
 import { DIFFICULTY_BUDGETS, applyMove, bestMove, initialState, legalMoves, tickClock, toSAN } from 'checkwait-core'
 import { cellToSquare, renderBoard } from './board-render.js'
@@ -15,16 +15,12 @@ import { startClaudeListener } from './claude.js'
 import { waitForPress } from './input/dismiss.js'
 import { KeyParser } from './input/parser.js'
 import { QuitConfirm } from './input/quit.js'
+import { createInputTranslator } from './input/translate.js'
 import { INITIAL_SELECT_STATE, selectStep, type SelectEvent, type SelectState } from './select.js'
 import { shareCard } from './share.js'
 import { TerminalSession } from './terminal.js'
 
 const REDRAW_MS = 100 // 10fps
-const TYPED_BUFFER_MAX = 10
-// Characters a SAN/coordinate move can legally contain: files a-h, ranks
-// 1-8, piece letters, capture/promotion/check punctuation, and castling's
-// '-' and 'O'.
-const MOVE_CHARS = /^[a-hA-H1-8KQRBNOx=+#-]$/
 
 export interface GameOpts {
   selfColor: Color
@@ -50,6 +46,31 @@ export function resultLine(result: Result, selfColor: Color): string {
   return `draw by ${REASONS[result.kind as Exclude<Result['kind'], 'checkmate' | 'resign' | 'flag'>]}`
 }
 
+// Shared tail for both loops: finished screen (if the game ended, not on a
+// mid-match quit) → waitForPress → Claude-listener close → caller cleanup
+// (e.g. online closes its socket) → terminal restore → share card on the
+// NORMAL screen (post-restore, so it lands in scrollback ready to copy into
+// a post) → exit.
+export async function teardownAndExit(o: {
+  term: TerminalSession
+  parser: KeyParser
+  listener: { close(): Promise<void> }
+  finale: { screen: string; shareText: string } | null // null = quit mid-match, nothing worth showing
+  beforeRestore?: () => void
+}): Promise<never> {
+  if (o.finale) {
+    o.term.write(o.finale.screen)
+    // M1: only a real key/button press dismisses — never mouse motion, focus
+    // changes, or the release of a key held when the game ended.
+    await waitForPress(process.stdin, o.parser)
+  }
+  await o.listener.close()
+  o.beforeRestore?.()
+  o.term.restore()
+  if (o.finale) process.stdout.write('\n' + o.finale.shareText)
+  process.exit(0)
+}
+
 export async function runGame(opts: GameOpts): Promise<void> {
   const term = new TerminalSession(process.stdin, process.stdout)
   const parser = new KeyParser()
@@ -63,7 +84,6 @@ export async function runGame(opts: GameOpts): Promise<void> {
   let lastMove: Move | null = null
   const sanHistory: string[] = []
   let banner: string | null = null
-  let typedBuffer = ''
   let quit = false
   let lastTickAt = performance.now()
   let seed = (opts.seed ?? Date.now()) >>> 0
@@ -116,7 +136,7 @@ export async function runGame(opts: GameOpts): Promise<void> {
     if (quitConfirm.armed) return 'press again to quit'
     if (sel.pendingPromotion) return 'promote: (q)ueen (r)ook (b)ishop k(n)ight'
     if (banner) return banner
-    if (typedBuffer.length > 0) return `> ${typedBuffer}`
+    if (input.typed.length > 0) return `> ${input.typed}`
     return ''
   }
 
@@ -158,66 +178,18 @@ export async function runGame(opts: GameOpts): Promise<void> {
   }
   process.stdout.on('resize', onResize)
 
-  const onData = (chunk: Buffer) => {
-    for (const e of parser.feed(chunk)) {
-      if ('type' in e) {
-        if (e.action === 'press' && e.button === 'left') {
-          const square = cellToSquare(e.x, e.y, cols, rows, opts.selfColor)
-          if (square !== null) dispatch({ kind: 'click', square })
-        }
-        continue
-      }
-      if (e.kind !== 'press') continue // repeats/releases never drive game input
-      const key = e.key
-      const lower = key.toLowerCase()
-
-      if (lower === 'ctrl-c') { quit = true; continue } // instant escape hatch, never confirm-gated
-
-      if (sel.pendingPromotion && (lower === 'q' || lower === 'r' || lower === 'b' || lower === 'n')) {
-        dispatch({ kind: 'promo', piece: lower as 'q' | 'r' | 'b' | 'n' })
-        continue
-      }
-
-      if (lower === 'esc') {
-        if (typedBuffer.length > 0) { typedBuffer = ''; redraw(); continue }
-        if (banner && !quitConfirm.armed) { banner = null; redraw(); continue }
-        quit = quitConfirm.request()
-        redraw()
-        continue
-      }
-      // 'q' quits only when there's no typed buffer in progress — a typed
-      // queen move ('Qxf7') must be able to use the letter q/Q.
-      if (lower === 'q' && typedBuffer.length === 0) {
-        quit = quitConfirm.request()
-        redraw()
-        continue
-      }
-      if (key === 'up' || key === 'down' || key === 'left' || key === 'right') {
-        dispatch({ kind: 'cursor', dir: key })
-        continue
-      }
-      if (lower === 'enter') {
-        if (typedBuffer.length > 0) {
-          const text = typedBuffer
-          typedBuffer = ''
-          dispatch({ kind: 'typed', text })
-        } else {
-          dispatch({ kind: 'enter' })
-        }
-        continue
-      }
-      if (lower === 'backspace') {
-        typedBuffer = typedBuffer.slice(0, -1)
-        redraw()
-        continue
-      }
-      if (MOVE_CHARS.test(key) && typedBuffer.length < TYPED_BUFFER_MAX) {
-        typedBuffer += key
-        redraw()
-      }
-    }
-  }
-  process.stdin.on('data', onData)
+  const input = createInputTranslator(parser, {
+    dispatch,
+    redraw,
+    squareAt: (x, y) => cellToSquare(x, y, cols, rows, opts.selfColor),
+    hasPendingPromotion: () => sel.pendingPromotion !== null,
+    hasBanner: () => banner !== null,
+    clearBanner: () => { banner = null },
+    quitArmed: () => quitConfirm.armed,
+    requestQuit: () => { quit = quitConfirm.request(); redraw() },
+    instantQuit: () => { quit = true },
+  })
+  process.stdin.on('data', input.onData)
 
   term.enter()
   term.installExitGuards(() => { /* no extra resources to release offline */ })
@@ -235,36 +207,31 @@ export async function runGame(opts: GameOpts): Promise<void> {
     }, REDRAW_MS)
   })
 
-  process.stdin.off('data', onData)
+  process.stdin.off('data', input.onData)
   process.stdout.off('resize', onResize)
 
-  const finished = state.result !== null
-  if (finished) {
-    term.write(
-      renderBoard({
-        state,
-        selfColor: opts.selfColor,
-        selected: null,
-        legalTargets: [],
-        lastMove,
-        cursor: null,
-        colorMode,
-        cols,
-        rows,
-        sanHistory,
-        opponentHandle: opts.opponentHandle,
-        statusLine: `${resultLine(state.result!, opts.selfColor)} — press any key`,
-      }),
-    )
-    await waitForPress(process.stdin, parser)
-  }
-
-  await listener.close()
-  term.restore()
-  // Share card on the NORMAL screen (post-restore) so it lands in scrollback.
-  // Finished games only — a mid-match quit has no result worth sharing.
-  if (finished) {
-    process.stdout.write('\n' + shareCard(state.result!, opts.selfColor, sanHistory.length, opts.opponentHandle))
-  }
-  process.exit(0)
+  await teardownAndExit({
+    term,
+    parser,
+    listener,
+    finale: state.result
+      ? {
+          screen: renderBoard({
+            state,
+            selfColor: opts.selfColor,
+            selected: null,
+            legalTargets: [],
+            lastMove,
+            cursor: null,
+            colorMode,
+            cols,
+            rows,
+            sanHistory,
+            opponentHandle: opts.opponentHandle,
+            statusLine: `${resultLine(state.result, opts.selfColor)} — press any key`,
+          }),
+          shareText: shareCard(state.result, opts.selfColor, sanHistory.length, opts.opponentHandle),
+        }
+      : null,
+  })
 }
