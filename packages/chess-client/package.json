@@ -1,0 +1,10 @@
+{
+  "name": "checkwait",
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "checkwait": "bin/checkwait.js" },
+  "files": ["dist", "bin"],
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "dependencies": { "checkwait-core": "0.0.0" }
+}
