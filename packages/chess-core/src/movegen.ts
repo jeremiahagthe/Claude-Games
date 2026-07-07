@@ -261,12 +261,20 @@ export function positionKey(s: ChessState): string {
   return `${boardKey}|${s.turn}|${castlingKey || '-'}|${epKey}`
 }
 
-// Applies a move to the board/castling/ep/halfmove/history fields only —
-// does not touch clocksMs or result. Used internally by legalMoves for
-// check-filtering (which must not recurse into detectResult, since
-// detectResult itself calls legalMoves). The public applyMove below wraps
-// this with clock and result bookkeeping.
-function applyMoveRaw(s: ChessState, m: Move): ChessState {
+// INTERNAL/ADVANCED: applies a move to the board/castling/ep/halfmove/
+// history fields only — does not touch clocksMs or result. Used internally
+// by legalMoves for check-filtering (which must not recurse into
+// detectResult, since detectResult itself calls legalMoves). The public
+// applyMove below wraps this with clock and result bookkeeping.
+//
+// Exported ONLY for use by performance-sensitive internals such as the bot's
+// search (bot.ts), which needs to apply many moves per second without
+// paying for a full detectResult (legalMoves) pass on every node. Ordinary
+// callers — game loop, UI, protocol handlers — MUST use applyMove instead:
+// this function does not stamp `result` and does not apply the move
+// increment, so a caller that uses it for real gameplay will silently lose
+// game-over detection and clock increments.
+export function applyMoveRaw(s: ChessState, m: Move): ChessState {
   const piece = s.board[m.from]
   if (!piece || piece.color !== s.turn) throw new Error(`illegal move: no ${s.turn} piece on from-square`)
 

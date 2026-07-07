@@ -1,4 +1,5 @@
 export * from './board.js'
+export * from './bot.js'
 export * from './fen.js'
 export * from './movegen.js'
 export * from './notation.js'
