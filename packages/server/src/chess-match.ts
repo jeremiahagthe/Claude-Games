@@ -12,7 +12,9 @@ import {
 } from 'checkwait-core'
 
 export function parseChessMatchId(pathname: string): string | null {
-  const m = pathname.match(/^\/chess\/match\/([0-9a-f]+)\/ws$/)
+  // A DO id from idFromString() is always exactly 64 lowercase hex chars; anything else
+  // would make idFromString() throw and turn a malformed request into an unhandled 500.
+  const m = pathname.match(/^\/chess\/match\/([0-9a-f]{64})\/ws$/)
   return m ? m[1]! : null
 }
 
@@ -60,7 +62,7 @@ export class ChessMatchHost {
     let alarmAt: number | null = null
     if (this.conns.size === 2) {
       this.lastMoveAt = Date.now()
-      alarmAt = this.lastMoveAt + this.state.clocksMs.w
+      alarmAt = this.lastMoveAt + this.state.clocksMs[this.state.turn]
       const fen = toFEN(this.state)
       const clocksMs = this.state.clocksMs
       this.send(this.conns.get('w')!, { t: 'welcome', color: 'w', opponent: this.handles.get('b')!, state: fen, clocksMs })
@@ -79,6 +81,11 @@ export class ChessMatchHost {
       return { type: 'ended' }
     }
     if (msg.t !== 'move') return { type: 'none' } // a stray 'join' after joining: ignore
+    // lastMoveAt is set only once both players have joined (see join() above); a move that
+    // arrives before pairing would be untimed, never relayed to a not-yet-connected opponent
+    // (leaving their history off-by-one), and would break the alarm-at-join assumption that
+    // no move has happened yet.
+    if (this.lastMoveAt === null) return { type: 'illegal' }
     if (this.state.turn !== color) return { type: 'illegal' }
 
     const move = parseMove(this.state, msg.move)
@@ -162,7 +169,10 @@ export class ChessMatchDO implements DurableObject {
       const raw = typeof ev.data === 'string' ? ev.data : ''
       const color = this.ids.get(server)
       if (color) {
-        this.applyAction(this.host!.handleMessage(color, raw), server)
+        // this.host can already be null here: applyAction('ended') nulls it and closes both
+        // sockets itself, but a straggling message from the other side can still race in
+        // before its own 'close' event fires. Nothing to relay to once the match is gone.
+        if (this.host) this.applyAction(this.host.handleMessage(color, raw), server)
         return
       }
       // First message on this socket must be a well-formed join -- routed through
@@ -187,7 +197,10 @@ export class ChessMatchDO implements DurableObject {
     })
     server.addEventListener('close', () => {
       const color = this.ids.get(server)
-      if (color) this.applyAction(this.host!.leave(color), server)
+      // Same race as the message handler above: applyAction('ended') already closed both
+      // sockets and nulled this.host, so the *other* socket's own real close event can still
+      // fire after that -- host may legitimately be null by the time it lands.
+      if (color && this.host) this.applyAction(this.host.leave(color), server)
     })
     return new Response(null, { status: 101, webSocket: client })
   }

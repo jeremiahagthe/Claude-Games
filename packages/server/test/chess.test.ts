@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { parseChessServerMsg } from 'checkwait-core'
 import { ChessLobbyQueue, type LobbyOutcome } from '../src/chess-lobby.js'
-import { ChessMatchHost, parseChessMatchId, type ChessConn } from '../src/chess-match.js'
+import { ChessMatchDO, ChessMatchHost, parseChessMatchId, type ChessConn } from '../src/chess-match.js'
 
 function conn(): ChessConn & { sent: string[] } {
   const sent: string[] = []
@@ -56,12 +56,18 @@ describe('ChessLobbyQueue', () => {
   })
 })
 
+const VALID_ID = 'a'.repeat(64)
+
 describe('parseChessMatchId', () => {
-  it('extracts the match id from the ws path and rejects everything else', () => {
-    expect(parseChessMatchId('/chess/match/abc123/ws')).toBe('abc123')
+  it('extracts a well-formed 64-char hex DO id from the ws path', () => {
+    expect(parseChessMatchId(`/chess/match/${VALID_ID}/ws`)).toBe(VALID_ID)
+  })
+  it('rejects anything that is not exactly 64 lowercase hex chars', () => {
+    expect(parseChessMatchId('/chess/match/abc123/ws')).toBeNull() // too short: idFromString would throw 500
+    expect(parseChessMatchId(`/chess/match/${VALID_ID}f/ws`)).toBeNull() // too long
     expect(parseChessMatchId('/chess/match//ws')).toBeNull()
     expect(parseChessMatchId('/match/abc123/ws')).toBeNull()
-    expect(parseChessMatchId('/chess/match/UPPER/ws')).toBeNull()
+    expect(parseChessMatchId(`/chess/match/${'A'.repeat(64)}/ws`)).toBeNull() // uppercase
   })
 })
 
@@ -114,6 +120,15 @@ describe('ChessMatchHost', () => {
     host.join(black, 'bob')
     const action = host.handleMessage('b', JSON.stringify({ t: 'move', move: 'e7e5', seq: 1 }))
     expect(action).toEqual({ type: 'illegal' })
+  })
+
+  it('a move before the opponent has paired is rejected as illegal (no free clock, no un-relayed move)', () => {
+    const host = new ChessMatchHost()
+    const white = conn()
+    host.join(white, 'alice') // only one side joined: not yet paired
+    const action = host.handleMessage('w', JSON.stringify({ t: 'move', move: 'e2e4', seq: 1 }))
+    expect(action).toEqual({ type: 'illegal' })
+    expect(white.sent).toHaveLength(0) // never broadcast -- no opponent to desync
   })
 
   it('a legal move relays to both with authoritative (ticked + incremented) clocks and schedules the next alarm', () => {
@@ -197,5 +212,88 @@ describe('ChessMatchHost', () => {
   it('onAlarm is a no-op if the game already ended or before pairing', () => {
     const host = new ChessMatchHost()
     expect(host.onAlarm()).toEqual({ type: 'none' }) // never paired: lastMoveAt is null
+  })
+})
+
+// Minimal fake of the ambient (types-only) Workers WebSocketPair/WebSocket/DurableObjectState
+// globals -- this repo has no wrangler-runtime test harness (see the comment above the onAlarm
+// tests), so ChessMatchDO itself is otherwise untested. This fake exists specifically to
+// reproduce the close-after-end / late-message-after-end races that a real DO can hit: the
+// game-over path closes both sockets itself (see applyAction's 'ended' branch), and the
+// *other* side's real 'close' event can still fire afterward, racing this.host being nulled.
+class FakeSocket {
+  sent: string[] = []
+  closedWith: { code: number; reason: string } | null = null
+  private listeners: Record<string, Array<(ev: unknown) => void>> = {}
+  accept(): void {}
+  addEventListener(type: string, cb: (ev: unknown) => void): void {
+    ;(this.listeners[type] ??= []).push(cb)
+  }
+  send(data: string): void {
+    this.sent.push(data)
+  }
+  close(code: number, reason: string): void {
+    this.closedWith = { code, reason }
+  }
+  dispatch(type: string, ev: unknown = {}): void {
+    for (const cb of [...(this.listeners[type] ?? [])]) cb(ev)
+  }
+}
+
+function fakeRequest(): Request {
+  return { headers: { get: (h: string) => (h === 'Upgrade' ? 'websocket' : null) } } as unknown as Request
+}
+
+function fakeDoState(): DurableObjectState {
+  return { storage: { setAlarm: async () => {}, deleteAlarm: async () => {} } } as unknown as DurableObjectState
+}
+
+describe('ChessMatchDO', () => {
+  it('a close event racing right after the game already ended does not throw (host is null)', async () => {
+    const pairs: FakeSocket[][] = []
+    vi.stubGlobal(
+      'WebSocketPair',
+      class {
+        constructor() {
+          const pair = [new FakeSocket(), new FakeSocket()]
+          pairs.push(pair)
+          return pair as unknown as [FakeSocket, FakeSocket]
+        }
+      },
+    )
+    // Real Workers Response supports status 101 + a `webSocket` option (a Workers-only
+    // extension to the fetch spec); Node's built-in Response rejects 101 outright. Stub it so
+    // this test can exercise ChessMatchDO.fetch()'s return value without tripping over an
+    // unrelated environment gap.
+    vi.stubGlobal(
+      'Response',
+      class {
+        constructor(
+          public body: unknown,
+          public init: unknown,
+        ) {}
+      },
+    )
+    try {
+      const doInstance = new ChessMatchDO(fakeDoState())
+      await doInstance.fetch(fakeRequest())
+      const white = pairs[0]![1]!
+      white.dispatch('message', { data: JSON.stringify({ t: 'join', handle: 'alice' }) })
+
+      await doInstance.fetch(fakeRequest())
+      const black = pairs[1]![1]!
+      black.dispatch('message', { data: JSON.stringify({ t: 'join', handle: 'bob' }) })
+
+      // Resign ends the game synchronously: applyAction('ended') sets this.host = null and
+      // closes both sockets itself. The real runtime's 'close' event for each socket can still
+      // fire afterward (and a straggling 'message' can race it too) -- neither must throw.
+      white.dispatch('message', { data: JSON.stringify({ t: 'resign' }) })
+
+      expect(() => white.dispatch('close')).not.toThrow()
+      expect(() => black.dispatch('close')).not.toThrow()
+      expect(() => black.dispatch('message', { data: JSON.stringify({ t: 'resign' }) })).not.toThrow()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

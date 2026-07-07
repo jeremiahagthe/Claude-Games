@@ -14,8 +14,8 @@ describe('parseArgs --difficulty', () => {
     expect(parseArgs(['--difficulty', 'hard']).difficulty).toBe('hard')
   })
   it('follows the existing parseArgs convention: combines with other flags', () => {
-    const opts = parseArgs(['--offline', '--difficulty', 'hard', '--name', 'jer', '--mute'])
-    expect(opts).toEqual({ offline: true, name: 'jer', mute: true, difficulty: 'hard', server: DEFAULT_SERVER })
+    const opts = parseArgs(['--offline', '--difficulty', 'hard', '--name', 'jer'])
+    expect(opts).toEqual({ offline: true, name: 'jer', difficulty: 'hard', server: DEFAULT_SERVER })
   })
   it('throws on an invalid difficulty value (fail-fast, matching the codebase-wide plain-Error convention)', () => {
     expect(() => parseArgs(['--difficulty', 'nightmare'])).toThrow(/invalid --difficulty/)
@@ -36,8 +36,10 @@ describe('parseArgs (existing behavior, unaffected)', () => {
     expect(parseArgs([]).server).toBe(DEFAULT_SERVER)
     expect(DEFAULT_SERVER).toBe('https://fragwait-server.agthe7.workers.dev')
   })
-  it('mute flag', () => {
-    expect(parseArgs(['--mute']).mute).toBe(true)
-    expect(parseArgs([]).mute).toBe(false)
+  it('throws when --server is the last arg with no value, instead of assigning undefined', () => {
+    // Previously this silently set opts.server = undefined, which only surfaced later as a
+    // TypeError in net.ts's serverUrl.replace(...) — fail fast here instead, like --difficulty.
+    expect(() => parseArgs(['--server'])).toThrow(/invalid --server/)
+    expect(() => parseArgs(['--offline', '--server'])).toThrow(/invalid --server/)
   })
 })

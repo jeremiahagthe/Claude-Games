@@ -77,8 +77,8 @@ self-hosted server with `--server <url>` or the `FRAGWAIT_SERVER` env var.
 **Game 2: checkwait** — 3+2 blitz (3 minutes on the clock, +2s per move) you
 play while Claude works, the same 3–6 minute session shape as a fragwait
 match. Online PvP via matchmaking by default — if no opponent shows up
-within ~10s, it falls back to a local bot automatically (announced in the
-HUD: "no opponent online — playing the bot"), so there's always a game.
+within ~10s, it falls back to a local bot automatically (announced in
+scrollback: "no opponent online — playing the bot"), so there's always a game.
 
 Unicode pieces on a checkered board, with an ASCII/letters fallback on
 low-color terminals. Both clocks and a running SAN move list stay in the
@@ -93,9 +93,9 @@ npx -y checkwait
 
 Add `--offline` to skip matchmaking and play a local bot-only match,
 `--difficulty easy|normal|hard` to tune the bot (default `easy`), `--name
-<handle>` to set your display name, `--mute` to silence sound effects, and
-`--server <url>` to point at a self-hosted worker (checkwait's matchmaking
-and fragwait's deathmatch share the same Cloudflare Worker deployment).
+<handle>` to set your display name, and `--server <url>` to point at a
+self-hosted worker (checkwait's matchmaking and fragwait's deathmatch share
+the same Cloudflare Worker deployment).
 
 ### checkwait controls
 
