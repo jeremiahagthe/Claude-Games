@@ -177,25 +177,34 @@ function pieceLetter(type: PieceType, color: Color): string {
 interface CellGeometry {
   cw: number
   ch: number
+  hudLines: number // 4 = full HUD; 2 = compact (traded for sprite-size squares)
 }
 
-const NARROW: CellGeometry = { cw: 4, ch: 2 }
-// HUD is 4 lines (clock, san/last-move, opponent, status). The frame must
-// FIT the terminal or the top rank scrolls off (feel-1: rank 8 was clipped
-// at the spec-recommended 100x28 because the old threshold only fell back
+// Full HUD is 4 lines (clock, san/last-move, opponent, status); the compact
+// HUD is 2 (clock + opponent combined, then status/san). The frame must FIT
+// the terminal or the top rank scrolls off (feel-1: rank 8 was clipped at
+// the spec-recommended 100x28 because the old threshold only fell back
 // below 22 rows).
 export const HUD_LINES = 4
+const COMPACT_HUD_LINES = 2
+const NARROW: CellGeometry = { cw: 4, ch: 2, hudLines: HUD_LINES }
 const MIN_WIDE_CH = 3 // below this, cells are too coarse for sprites → NARROW glyphs
 const MAX_CH = 8 // squares stop growing at 16x8 cells — beyond this the board dwarfs the HUD
 
 // Adaptive square size (feel chess-3): pick the largest square that fits the
 // terminal, keeping cw = 2*ch (terminal cells are ~1:2, so the square — and
 // its cw x 2*ch pixel grid — stays visually square). Bigger window = bigger
-// squares = bigger piece sprites.
+// squares = bigger piece sprites. When only the 4-line HUD stands between a
+// terminal and sprite-size squares (feel chess-4b: default macOS windows are
+// ~26 rows, one short of 8*3+4), collapse the HUD to 2 lines instead of
+// falling back to tiny glyphs.
 export function cellSize(cols: number, rows: number): CellGeometry {
-  const ch = Math.min(Math.floor((rows - HUD_LINES) / 8), Math.floor(cols / 16), MAX_CH)
-  if (ch < MIN_WIDE_CH) return NARROW
-  return { cw: 2 * ch, ch }
+  const chFor = (hud: number) => Math.min(Math.floor((rows - hud) / 8), Math.floor(cols / 16), MAX_CH)
+  const full = chFor(HUD_LINES)
+  if (full >= MIN_WIDE_CH) return { cw: 2 * full, ch: full, hudLines: HUD_LINES }
+  const compact = chFor(COMPACT_HUD_LINES)
+  if (compact >= MIN_WIDE_CH) return { cw: 2 * compact, ch: compact, hudLines: COMPACT_HUD_LINES }
+  return NARROW
 }
 
 // Visual row order (top of screen -> bottom): white sees rank8 down to
@@ -276,7 +285,7 @@ function centerPad(s: string, width: number): string {
 }
 
 export function renderBoard(o: RenderOpts): string {
-  const { cw, ch } = cellSize(o.cols, o.rows)
+  const { cw, ch, hudLines } = cellSize(o.cols, o.rows)
   const ranks = boardRanks(o.selfColor)
   const files = boardFiles(o.selfColor)
   const legalSet = new Set(o.legalTargets)
@@ -376,10 +385,19 @@ export function renderBoard(o: RenderOpts): string {
   // status line doubles as the how-to-fix hint.
   const hint = o.colorMode === 'truecolor' && !sprites ? 'enlarge the window for bigger pieces' : ''
   const hudWidth = Math.max(1, o.cols - 1)
-  lines.push(clockLine(o.state, o.selfColor).slice(0, hudWidth))
-  lines.push((o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove)).slice(0, hudWidth))
-  lines.push((o.opponentHandle ? `vs ${o.opponentHandle}` : '').slice(0, hudWidth))
-  lines.push((o.statusLine || hint).slice(0, hudWidth))
+  const movesLine = o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove)
+  if (hudLines === HUD_LINES) {
+    lines.push(clockLine(o.state, o.selfColor).slice(0, hudWidth))
+    lines.push(movesLine.slice(0, hudWidth))
+    lines.push((o.opponentHandle ? `vs ${o.opponentHandle}` : '').slice(0, hudWidth))
+    lines.push((o.statusLine || hint).slice(0, hudWidth))
+  } else {
+    // Compact HUD (feel chess-4b): the two lines that matter — clocks+who,
+    // then the interactive line (status beats SAN history when both exist).
+    const who = o.opponentHandle ? `  vs ${o.opponentHandle}` : ''
+    lines.push((clockLine(o.state, o.selfColor) + who).slice(0, hudWidth))
+    lines.push((o.statusLine || movesLine).slice(0, hudWidth))
+  }
 
   // Never emit more lines than the terminal has — overflow scrolls the TOP
   // rank off (feel-1). Drop HUD tail lines, never board rows.

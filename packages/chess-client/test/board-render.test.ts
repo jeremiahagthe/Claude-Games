@@ -92,11 +92,26 @@ describe('renderBoard', () => {
     expect(out).toContain('\x1b[48;2;163;168;79m')
   })
 
-  // feel-1 frame-fit rules: the top rank scrolled off at the recommended
-  // 100x28 because WIDE (24 board lines) + HUD exceeded the old 22-row
-  // fallback threshold; and any overflow must drop HUD lines, never scroll.
-  it('falls back to 4x2 cells when rows < 28 even with plenty of columns', () => {
-    const out = renderBoard(baseOpts({ cols: 100, rows: 27 }))
+  // feel chess-4b: when only the 4-line HUD blocks sprite-size squares
+  // (default macOS windows are ~26 rows, one short of 8*3+4), the HUD
+  // collapses to 2 lines instead of falling back to tiny glyphs.
+  it('collapses the HUD to 2 lines at 26-27 rows so sprites still fit', () => {
+    const out = renderBoard(baseOpts({ cols: 100, rows: 26, opponentHandle: 'bot·easy' }))
+    const stripped = strip(out).split('\r\n')
+    expect(stripped.length).toBe(26) // 8*3 board + 2 HUD
+    expect(stripped.some((l) => l.length === 48)).toBe(true) // 6x3 sprite cells
+    expect(out).toMatch(/[▀▄█]/)
+    expect(stripped.some((l) => l.includes('● 3:00') && l.includes('vs bot·easy'))).toBe(true) // combined HUD line
+  })
+
+  it('compact HUD: status line wins over SAN history on the second line', () => {
+    const out = strip(renderBoard(baseOpts({ cols: 100, rows: 26, sanHistory: ['e4'], statusLine: '> h' })))
+    expect(out).toContain('> h')
+    expect(out).not.toContain('e4')
+  })
+
+  it('falls back to 4x2 glyph cells when rows cannot fit sprites even with a compact HUD', () => {
+    const out = renderBoard(baseOpts({ cols: 100, rows: 25 })) // (25-2)/8 < 3
     const lines = strip(out).split('\r\n')
     expect(lines.some((l) => l.length === 32)).toBe(true)
     expect(lines.some((l) => l.length === 48)).toBe(false)
