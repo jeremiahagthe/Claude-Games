@@ -110,8 +110,26 @@ describe('renderBoard', () => {
     expect(out).not.toContain('e4')
   })
 
-  it('falls back to 4x2 glyph cells when rows cannot fit sprites even with a compact HUD', () => {
-    const out = renderBoard(baseOpts({ cols: 100, rows: 25 })) // (25-2)/8 < 3
+  // feel chess-4c: iTerm2's default window is 80x25 — one row short of even
+  // the 2-line HUD, so the ladder ends at a single combined HUD line.
+  it('collapses the HUD to 1 line at 25 rows (iTerm2 default) so sprites still fit', () => {
+    const out = renderBoard(baseOpts({ cols: 80, rows: 25, opponentHandle: 'bot·easy' }))
+    const stripped = strip(out).split('\r\n')
+    expect(stripped.length).toBe(25) // 8*3 board + 1 HUD
+    expect(out).toMatch(/[▀▄█]/)
+    expect(stripped.some((l) => l.includes('● 3:00') && l.includes('vs bot·easy'))).toBe(true)
+  })
+
+  it('1-line HUD: status text replaces the opponent tail but never the clocks', () => {
+    const out = strip(renderBoard(baseOpts({ cols: 80, rows: 25, opponentHandle: 'bot·easy', statusLine: '> h' })))
+    const hud = out.split('\r\n')[24]
+    expect(hud).toContain('● 3:00')
+    expect(hud).toContain('> h')
+    expect(hud).not.toContain('vs bot·easy')
+  })
+
+  it('falls back to 4x2 glyph cells when rows cannot fit sprites even with a 1-line HUD', () => {
+    const out = renderBoard(baseOpts({ cols: 100, rows: 24 })) // (24-1)/8 < 3
     const lines = strip(out).split('\r\n')
     expect(lines.some((l) => l.length === 32)).toBe(true)
     expect(lines.some((l) => l.length === 48)).toBe(false)

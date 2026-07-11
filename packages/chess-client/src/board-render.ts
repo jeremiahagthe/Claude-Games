@@ -186,7 +186,10 @@ interface CellGeometry {
 // the spec-recommended 100x28 because the old threshold only fell back
 // below 22 rows).
 export const HUD_LINES = 4
-const COMPACT_HUD_LINES = 2
+// The HUD ladder: full 4 lines, then 2, then 1 — each step tried only when
+// the previous one can't fit sprite-size squares. The 1-line rung exists for
+// iTerm2's default 80x25 window (feel chess-4c): 24 board rows + 1.
+const HUD_LADDER = [HUD_LINES, 2, 1] as const
 const NARROW: CellGeometry = { cw: 4, ch: 2, hudLines: HUD_LINES }
 const MIN_WIDE_CH = 3 // below this, cells are too coarse for sprites → NARROW glyphs
 const MAX_CH = 8 // squares stop growing at 16x8 cells — beyond this the board dwarfs the HUD
@@ -199,11 +202,10 @@ const MAX_CH = 8 // squares stop growing at 16x8 cells — beyond this the board
 // ~26 rows, one short of 8*3+4), collapse the HUD to 2 lines instead of
 // falling back to tiny glyphs.
 export function cellSize(cols: number, rows: number): CellGeometry {
-  const chFor = (hud: number) => Math.min(Math.floor((rows - hud) / 8), Math.floor(cols / 16), MAX_CH)
-  const full = chFor(HUD_LINES)
-  if (full >= MIN_WIDE_CH) return { cw: 2 * full, ch: full, hudLines: HUD_LINES }
-  const compact = chFor(COMPACT_HUD_LINES)
-  if (compact >= MIN_WIDE_CH) return { cw: 2 * compact, ch: compact, hudLines: COMPACT_HUD_LINES }
+  for (const hud of HUD_LADDER) {
+    const ch = Math.min(Math.floor((rows - hud) / 8), Math.floor(cols / 16), MAX_CH)
+    if (ch >= MIN_WIDE_CH) return { cw: 2 * ch, ch, hudLines: hud }
+  }
   return NARROW
 }
 
@@ -391,12 +393,17 @@ export function renderBoard(o: RenderOpts): string {
     lines.push(movesLine.slice(0, hudWidth))
     lines.push((o.opponentHandle ? `vs ${o.opponentHandle}` : '').slice(0, hudWidth))
     lines.push((o.statusLine || hint).slice(0, hudWidth))
-  } else {
+  } else if (hudLines === 2) {
     // Compact HUD (feel chess-4b): the two lines that matter — clocks+who,
     // then the interactive line (status beats SAN history when both exist).
     const who = o.opponentHandle ? `  vs ${o.opponentHandle}` : ''
     lines.push((clockLine(o.state, o.selfColor) + who).slice(0, hudWidth))
     lines.push((o.statusLine || movesLine).slice(0, hudWidth))
+  } else {
+    // 1-line HUD (feel chess-4c, iTerm2's default 80x25): clocks always,
+    // then whichever of status/opponent matters more right now.
+    const tail = o.statusLine || (o.opponentHandle ? `vs ${o.opponentHandle}` : '')
+    lines.push((clockLine(o.state, o.selfColor) + (tail ? `  ${tail}` : '')).slice(0, hudWidth))
   }
 
   // Never emit more lines than the terminal has — overflow scrolls the TOP
