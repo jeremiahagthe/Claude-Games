@@ -128,6 +128,121 @@ describe('never-suicide property', () => {
   })
 })
 
+describe('never-suicide: short-fuse occupancy window', () => {
+  it('mid-stride bot must not rest on a tile whose flame lands inside its occupancy window', () => {
+    // Regression for the holdSafe occupancy bug: under latched movement the bot
+    // OCCUPIES each tile for stepTicks between hops, so a flame arriving inside
+    // [arrival, arrival + stepCost) kills it there even though the arrival
+    // instant itself was clear. Corridor fixture: p0 mid-stride (stepCooldown 4)
+    // at (5,1); down blocked by soft (5,2); up is the border wall. B1 (fuse 40,
+    // range 2 at (7,1)) makes (5,1) dangerous so the bot must flee along row 1.
+    // Left leads onto (4,1), which B2 (fuse 7, range 1 at (3,1)) flames at tick
+    // 6 — inside the bot's occupancy of that tile: it arrives ~tick 3 (mid-
+    // stride cooldown), (3,1)'s own bomb dead-ends the run, and the step
+    // cooldown locks it there past tick 6. An arrival-instant-only check rates
+    // left safe (7 > arrival estimate) and the bot burns; occupancy-aware
+    // danger must reject left and take the right-hand slack toward (6,1).
+    let s = clearArena(createMatch(1, NAMES, BOTS))
+    s.grid[idx(5, 2)] = 'soft'
+    s = {
+      ...s,
+      players: s.players.map((p, i) => (i === 0 ? { ...p, x: 5, y: 1, stepCooldown: 4 } : p)),
+      bombs: [
+        { owner: 1, x: 7, y: 1, fuse: 40, range: 2 },
+        { owner: 1, x: 3, y: 1, fuse: 7, range: 1 },
+      ],
+    }
+    const mind = createBotMind(7)
+    let state = s
+    for (let t = 0; t < 120 && state.result === null; t++) {
+      const input = botDecide(state, 0, mind, 'normal')
+      state = step(state, [input, null, null, null])
+    }
+    expect(state.players[0].alive).toBe(true)
+  })
+
+  it('100 seeded short-fuse states (fuse 6-15) with a reachable safe tile: bot survives', () => {
+    // Same generator shape as the main never-suicide property but in the
+    // short-fuse regime the 20-34 range never enters, where occupancy windows
+    // dominate. Only normal/hard here: easy's p=0.15 danger-check skip is a
+    // BY-DESIGN mistake that is fatal near short fuses (one skipped decision
+    // at cadence 10 can eat the whole fuse), so it can't carry a survival
+    // guarantee in this regime.
+    const rng = mulberry32(888)
+    const difficulties: Difficulty[] = ['normal', 'hard']
+    let ran = 0
+    for (let i = 0; i < 100; i++) {
+      const bx = 1 + Math.floor(rng() * (GRID_W - 2))
+      const by = 1 + Math.floor(rng() * (GRID_H - 2))
+      if (bx % 2 === 0 && by % 2 === 0) continue
+      const dx = Math.floor(rng() * 5) - 2
+      const dy = Math.floor(rng() * 5) - 2
+      let bombX = bx + dx
+      let bombY = by + dy
+      bombX = Math.max(1, Math.min(GRID_W - 2, bombX))
+      bombY = Math.max(1, Math.min(GRID_H - 2, bombY))
+      if (bombX % 2 === 0 && bombY % 2 === 0) continue
+      if (bombX === bx && bombY === by) continue
+      const fuse = 6 + Math.floor(rng() * 10) // 6..15: short-fuse regime
+      const range = 1 + Math.floor(rng() * 3)
+
+      let s = clearArena(createMatch(1, NAMES, BOTS))
+      s = {
+        ...s,
+        players: s.players.map((p, idx0) => (idx0 === 0 ? { ...p, x: bx, y: by } : p)),
+        bombs: [{ owner: 1, x: bombX, y: bombY, fuse, range }],
+      }
+      const dmap = dangerMap(s)
+      const myIdx = idx(bx, by)
+      if (dmap[myIdx] === Infinity) continue
+
+      // Independent safe-option check as in the main property: an Infinity
+      // tile reachable in fewer ticks than the fuse allows.
+      const visited = new Set<number>([myIdx])
+      const queue: { x: number; y: number; dist: number }[] = [{ x: bx, y: by, dist: 0 }]
+      let qi = 0
+      let hasSafeOption = false
+      while (qi < queue.length) {
+        const cur = queue[qi++]!
+        for (const dir of DIRS) {
+          const t = move(cur.x, cur.y, dir)
+          if (t.x < 0 || t.x >= GRID_W || t.y < 0 || t.y >= GRID_H) continue
+          const ti = idx(t.x, t.y)
+          if (visited.has(ti)) continue
+          if (s.grid[ti] !== 'empty') continue
+          if (s.bombs.some((b) => b.x === t.x && b.y === t.y)) continue
+          visited.add(ti)
+          const dist = cur.dist + 1
+          if (dmap[ti] === Infinity && dist * 5 < fuse) { hasSafeOption = true; break }
+          queue.push({ x: t.x, y: t.y, dist })
+        }
+        if (hasSafeOption) break
+      }
+      if (!hasSafeOption) continue
+
+      ran++
+      const difficulty = difficulties[i % 2]!
+      const mind = createBotMind(2000 + i)
+      let state = s
+      let ticksRun = 0
+      const bound = fuse + 10 /* FLAME_TICKS */ + 40
+      while (state.result === null && state.bombs.length > 0 && ticksRun < bound) {
+        const input = botDecide(state, 0, mind, difficulty)
+        state = step(state, [input, null, null, null])
+        ticksRun++
+      }
+      let extra = 0
+      while (extra < 15) {
+        const input = botDecide(state, 0, mind, difficulty)
+        state = step(state, [input, null, null, null])
+        extra++
+      }
+      expect(state.players[0].alive).toBe(true)
+    }
+    expect(ran).toBeGreaterThan(0)
+  })
+})
+
 describe('bombing behavior', () => {
   it('bot adjacent to a soft block with a safe retreat eventually plants (run <= 200 ticks)', () => {
     let s = clearArena(createMatch(1, NAMES, BOTS))

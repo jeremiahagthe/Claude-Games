@@ -125,6 +125,17 @@ export function dangerMap(state: BomberState): number[] {
 // after that — so a hop PAST an already-safe tile can walk straight into it.
 // Reaching genuine (Infinity) safety doesn't end the check early; it's just
 // remembered as the preferred outcome once the whole window has been swept.
+//
+// Crucially, each tile is checked over its full OCCUPANCY window, not just
+// the arrival instant: the bot stands on every hopped tile for stepCost
+// ticks before the next step fires, so a flame arriving anywhere in
+// [arrival, arrival + stepCost) kills it there. The model's arrival estimate
+// (hop * stepCost) is an upper bound on the real arrival — the first step
+// can fire early off a fresh or mid-stride cooldown — and for the same
+// reason arrival + stepCost bounds the real departure, so the check stays
+// conservative for every actual timing. (No flame-expiry model: a flame
+// born before arrival is conservatively assumed still burning.)
+//
 // The one case that needs special care is getting BLOCKED (wall/soft/another
 // bomb) partway through — latched movement just keeps retrying and failing,
 // so the bot is stuck at the last tile reached for the REST of the window,
@@ -159,8 +170,11 @@ function holdSafe(
     ticks += stepCost
     const i = idx(t.x, t.y)
     const d = dmap[i]!
-    if (d !== Infinity && d <= ticks) {
-      return { safe: false, reachedInfinity, infinityTicks, hopsTaken } // would already be burning by then
+    // Occupancy check: the bot stands here for [arrival, arrival + stepCost),
+    // so any flame arriving before the NEXT step is lethal — not just one
+    // arriving before/at the arrival instant.
+    if (d !== Infinity && d < ticks + stepCost) {
+      return { safe: false, reachedInfinity, infinityTicks, hopsTaken } // would burn while standing here
     }
     x = t.x
     y = t.y
