@@ -179,20 +179,34 @@ export function step(state: BomberState, inputs: (Input | null)[]): BomberState 
           return dec ? { ...p, activeBombs: Math.max(0, p.activeBombs - dec) } : p
         })
 
-  // Existing drops caught in this tick's flame are destroyed; freshly revealed drops survive.
-  const survivingDrops = state.drops.filter((d) => !flameTiles.has(idx(d.x, d.y)))
+  // Active flames this tick: flames born this tick PLUS every carried-over flame
+  // still present at the start of the tick (pre-expiry-decrement). Boundary: a
+  // carried-over flame that expires during this tick's phase 7 is still lethal
+  // this tick — it was burning when players/drops landed on it. Consistent with
+  // the pinned expiry fixture (kill on creation tick; 0 flames after FLAME_TICKS).
+  const activeFlameTiles = new Set<number>(flameTiles.keys())
+  for (const f of state.flames) activeFlameTiles.add(idx(f.x, f.y))
+
+  // Existing drops caught in ANY active flame (new or lingering) are destroyed;
+  // freshly revealed drops survive the flame that exposed them.
+  const survivingDrops = state.drops.filter((d) => !activeFlameTiles.has(idx(d.x, d.y)))
   const drops = [...survivingDrops, ...revealedDrops]
 
-  // Phase 6: deaths — any alive player standing on a flame tile dies.
+  // Phase 6: deaths — any alive player standing on an active flame tile dies,
+  // including lingering flames from earlier ticks.
   const playersAfterDeaths = playersAfterBombDecrement.map((p) => {
     if (!p.alive) return p
-    if (!flameTiles.has(idx(p.x, p.y))) return p
+    if (!activeFlameTiles.has(idx(p.x, p.y))) return p
     return { ...p, alive: false }
   })
 
   // Phase 7: flame expiry — merge this tick's new flames with survivors, tick down.
+  // A carried-over flame on a re-flamed tile is dropped in favor of the new flame
+  // (timer refresh), which also keeps at most one flame entry per tile.
   const newFlames: Flame[] = Array.from(flameTiles.values()).map((t) => ({ x: t.x, y: t.y, ticks: FLAME_TICKS }))
-  const flames = [...state.flames, ...newFlames]
+  const carriedFlames =
+    flameTiles.size === 0 ? state.flames : state.flames.filter((f) => !flameTiles.has(idx(f.x, f.y)))
+  const flames = [...carriedFlames, ...newFlames]
     .map((f) => ({ ...f, ticks: f.ticks - 1 }))
     .filter((f) => f.ticks > 0)
 

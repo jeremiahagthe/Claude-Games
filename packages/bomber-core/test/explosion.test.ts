@@ -55,6 +55,32 @@ describe('bombs and explosions', () => {
     s = ticks(s, FLAME_TICKS)
     expect(s.flames).toHaveLength(0)
   })
+  it('lingering flame kills a player who walks in ticks after the blast', () => {
+    let s = clearArena(createMatch(1, NAMES, BOTS))
+    // p2/p3 pre-killed; bomb at (3,1) range 1: rays flame (2,1),(4,1),(3,2); up ray hits the y=0 border
+    // p0 at (1,1) is OUTSIDE the blast — range-1 left ray from (3,1) stops at (2,1)
+    s = { ...s, players: s.players.map((p, i) => (i >= 2 ? { ...p, alive: false } : p)),
+                bombs: [{ owner: 1, x: 3, y: 1, fuse: 1, range: 1 }] }
+    s = step(s, N)                             // detonation tick: flames born
+    expect(s.players[0].alive).toBe(true)      // p0 untouched by the blast itself
+    s = step(s, N)                             // flames linger (FLAME_TICKS=10, plenty left)
+    // Boundary choice: a flame is lethal on every tick it exists at the START of the tick
+    // (pre-expiry-decrement), i.e. creation tick + FLAME_TICKS-1 carried ticks — consistent
+    // with fixture 4 (kills on its creation tick; 0 flames remain after FLAME_TICKS steps).
+    s = step(s, [{ dir: 'right', bomb: false }, null, null, null]) // p0 steps onto (2,1)
+    expect(s.players[0].alive).toBe(false)     // lingering flame kills late walkers
+    expect(s.result).toEqual({ kind: 'win', winner: 1 }) // result stamped on the late-death path
+  })
+  it('an exposed drop under a lingering flame is destroyed', () => {
+    let s = clearArena(createMatch(1, NAMES, BOTS))
+    s = { ...s, bombs: [{ owner: 1, x: 3, y: 1, fuse: 1, range: 1 }] }
+    s = step(s, N)                             // flames born on (2,1),(4,1),(3,2) and center (3,1)
+    // hand-expose a drop onto (2,1) while the previous tick's flame still burns there
+    // (mirrors a chain revealing a drop into an already-burning tile)
+    s = { ...s, drops: [{ x: 2, y: 1, kind: 'range' }] }
+    s = step(s, N)
+    expect(s.drops).toHaveLength(0)            // lingering flame destroys the exposed drop
+  })
   it('sole survivor wins', () => {
     let s = clearArena(createMatch(1, NAMES, BOTS))
     s = { ...s, players: s.players.map((p, i) => (i >= 2 ? { ...p, alive: false } : p)),
