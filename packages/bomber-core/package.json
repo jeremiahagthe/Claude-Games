@@ -1,0 +1,11 @@
+{
+  "name": "boomwait-core",
+  "version": "0.0.0",
+  "description": "boomwait bomberman rules engine: grid, seeded layout, deterministic sim step",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json" }
+}

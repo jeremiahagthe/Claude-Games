@@ -1,0 +1,12 @@
+export const GRID_W = 13
+export const GRID_H = 11
+export const TICK_RATE = 20
+export const FUSE_TICKS = 40 // 2s
+export const FLAME_TICKS = 10 // 0.5s
+export const BASE_STEP_TICKS = 5 // base speed: one step per 5 ticks
+export const MIN_STEP_TICKS = 2 // speed power-up floor
+export const SHRINK_START_TICK = 1800 // 90s
+export const SHRINK_INTERVAL_TICKS = 20
+export const MAX_PLAYERS = 4
+export const SOFT_BLOCK_DENSITY = 0.75 // fraction of eligible tiles that get soft blocks
+export const POWERUP_COUNTS = { bomb: 6, range: 6, speed: 4 } // hidden under soft blocks
