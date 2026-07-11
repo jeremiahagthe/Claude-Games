@@ -33,7 +33,7 @@ export interface BomberState {
   players: PlayerState[] // length 4, index = player id
   bombs: Bomb[]
   flames: Flame[]
-  shrinkIndex: number // next SPIRAL position to close (-1 before start)
+  shrinkIndex: number // SPIRAL index of the LAST tile closed (-1 = none yet); SPIRAL.length once exhausted
   result: Result | null
 }
 

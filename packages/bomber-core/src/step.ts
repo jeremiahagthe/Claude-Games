@@ -1,4 +1,5 @@
-import { FLAME_TICKS, FUSE_TICKS, GRID_H, GRID_W } from './constants.js'
+import { FLAME_TICKS, FUSE_TICKS, GRID_H, GRID_W, SHRINK_INTERVAL_TICKS, SHRINK_START_TICK } from './constants.js'
+import { SPIRAL } from './grid.js'
 import type { Bomb, BomberState, Cell, Dir, Drop, Flame, Input, PlayerState, PowerupKind } from './state.js'
 import { idx, stepTicks } from './state.js'
 
@@ -49,6 +50,101 @@ function movementPhase(state: BomberState, inputs: (Input | null)[]): PlayerStat
     if (dir === p.dir && x === p.x && y === p.y && cooldown === p.stepCooldown) return p
     return { ...p, dir, x, y, stepCooldown: cooldown }
   })
+}
+
+// Phase 2.5 (pickup): an alive player standing on a drop tile after movement
+// collects it — stat bump (bombCap/range are unbounded here; speed is only
+// effective-capped downstream via stepTicks's MIN_STEP_TICKS floor, so it is
+// never clamped at pickup time), drop removed. Movement never checks player-
+// vs-player collision (isBlocked only looks at grid/bombs), so two players CAN
+// land on the same drop tile the same tick — ties resolve lowest-id-wins by
+// walking players in id order and consuming the drop for whichever claims it
+// first; later same-tick players at that tile find it already gone.
+function pickupPhase(drops: Drop[], players: PlayerState[]): { drops: Drop[]; players: PlayerState[] } {
+  let remaining = drops
+  let changed = false
+  const nextPlayers = players.map((p) => {
+    if (!p.alive) return p
+    const i = remaining.findIndex((d) => d.x === p.x && d.y === p.y)
+    if (i === -1) return p
+    const drop = remaining[i]!
+    remaining = [...remaining.slice(0, i), ...remaining.slice(i + 1)]
+    changed = true
+    switch (drop.kind) {
+      case 'bomb':
+        return { ...p, bombCap: p.bombCap + 1 }
+      case 'range':
+        return { ...p, range: p.range + 1 }
+      case 'speed':
+        return { ...p, speed: p.speed + 1 }
+    }
+  })
+  if (!changed) return { drops, players }
+  return { drops: remaining, players: nextPlayers }
+}
+
+interface ShrinkResult {
+  grid: Cell[]
+  hidden: (PowerupKind | null)[]
+  drops: Drop[]
+  bombs: Bomb[]
+  players: PlayerState[]
+  shrinkIndex: number
+}
+
+// Phase 7.5 (sudden-death shrink): from SHRINK_START_TICK, every
+// SHRINK_INTERVAL_TICKS the next SPIRAL tile closes to 'hard', destroying any
+// soft block/hidden power-up/drop there, crushing any bomb parked there
+// WITHOUT detonating it (a crush is a silent removal, not a chain trigger — it
+// produces no flames; the owner's activeBombs is still decremented so their
+// capacity frees up), and killing any player standing on it (even mid-fuse-
+// cooldown — position is all that matters). shrinkIndex holds the SPIRAL index
+// of the last tile closed (-1 = none yet), so SPIRAL[0] closes at exactly
+// newTick === SHRINK_START_TICK. Once the spiral is exhausted (closeIndex >=
+// SPIRAL.length) every player still alive dies — a guaranteed draw by tick
+// SHRINK_START_TICK + SPIRAL.length * SHRINK_INTERVAL_TICKS (3780), even if
+// survivors have been dodging every individual close.
+function shrinkPhase(
+  newTick: number,
+  shrinkIndex: number,
+  grid: Cell[],
+  hidden: (PowerupKind | null)[],
+  drops: Drop[],
+  bombs: Bomb[],
+  players: PlayerState[],
+): ShrinkResult {
+  if (newTick < SHRINK_START_TICK || (newTick - SHRINK_START_TICK) % SHRINK_INTERVAL_TICKS !== 0) {
+    return { grid, hidden, drops, bombs, players, shrinkIndex }
+  }
+  const closeIndex = shrinkIndex + 1
+  if (closeIndex >= SPIRAL.length) {
+    const survivorsCleared = players.map((p) => (p.alive ? { ...p, alive: false } : p))
+    return { grid, hidden, drops, bombs, players: survivorsCleared, shrinkIndex: SPIRAL.length }
+  }
+  const tile = SPIRAL[closeIndex]!
+  const cellIdx = idx(tile.x, tile.y)
+
+  const grid2 = grid.slice()
+  grid2[cellIdx] = 'hard'
+  const hidden2 = hidden.slice()
+  hidden2[cellIdx] = null
+  const drops2 = drops.filter((d) => idx(d.x, d.y) !== cellIdx)
+
+  const crushed = bombs.filter((b) => idx(b.x, b.y) === cellIdx)
+  const bombs2 = crushed.length === 0 ? bombs : bombs.filter((b) => idx(b.x, b.y) !== cellIdx)
+  const crushCounts = new Map<number, number>()
+  for (const b of crushed) crushCounts.set(b.owner, (crushCounts.get(b.owner) ?? 0) + 1)
+
+  const players2 = players.map((p) => {
+    const dec = crushCounts.get(p.id)
+    const afterCrush = dec ? { ...p, activeBombs: Math.max(0, p.activeBombs - dec) } : p
+    if (afterCrush.alive && afterCrush.x === tile.x && afterCrush.y === tile.y) {
+      return { ...afterCrush, alive: false }
+    }
+    return afterCrush
+  })
+
+  return { grid: grid2, hidden: hidden2, drops: drops2, bombs: bombs2, players: players2, shrinkIndex: closeIndex }
 }
 
 // Phase 1 (bomb half): place a bomb at each requesting, alive player's CURRENT
@@ -163,6 +259,9 @@ export function step(state: BomberState, inputs: (Input | null)[]): BomberState 
   const stateForMovement: BomberState = { ...state, bombs: bombsAfterPlacement, players: playersAfterPlacement }
   const playersAfterMove = movementPhase(stateForMovement, inputs)
 
+  // Phase 2.5: pickup — a player who just moved onto a drop tile collects it.
+  const { drops: dropsAfterPickup, players: playersAfterPickup } = pickupPhase(state.drops, playersAfterMove)
+
   // Phase 3: fuse decrement (applies to newly-placed bombs too).
   const bombsAfterFuse = bombsAfterPlacement.map((b) => ({ ...b, fuse: b.fuse - 1 }))
 
@@ -177,8 +276,8 @@ export function step(state: BomberState, inputs: (Input | null)[]): BomberState 
   for (const owner of detonatedOwners) decrementCounts.set(owner, (decrementCounts.get(owner) ?? 0) + 1)
   const playersAfterBombDecrement =
     decrementCounts.size === 0
-      ? playersAfterMove
-      : playersAfterMove.map((p) => {
+      ? playersAfterPickup
+      : playersAfterPickup.map((p) => {
           const dec = decrementCounts.get(p.id)
           return dec ? { ...p, activeBombs: Math.max(0, p.activeBombs - dec) } : p
         })
@@ -195,10 +294,11 @@ export function step(state: BomberState, inputs: (Input | null)[]): BomberState 
   // so only an arriving flame front can hit one. (Checking lingering flames too
   // would delete every explosion-revealed drop one tick after reveal — the
   // reveal tile is by construction still burning at T+1, and reveal is the only
-  // in-sim drop source.) Pre-existing drops are filtered first, then this
-  // tick's reveals appended, so a freshly revealed drop is never destroyed by
-  // the very ray that exposed it.
-  const survivingDrops = state.drops.filter((d) => !flameTiles.has(idx(d.x, d.y)))
+  // in-sim drop source.) Filtered from dropsAfterPickup (not state.drops) so a
+  // drop collected THIS tick by pickupPhase doesn't get resurrected here; this
+  // tick's reveals are appended after, so a freshly revealed drop is never
+  // destroyed by the very ray that exposed it.
+  const survivingDrops = dropsAfterPickup.filter((d) => !flameTiles.has(idx(d.x, d.y)))
   const drops = [...survivingDrops, ...revealedDrops]
 
   // Phase 6: deaths — any alive player standing on an active flame tile dies,
@@ -220,23 +320,29 @@ export function step(state: BomberState, inputs: (Input | null)[]): BomberState 
     .map((f) => ({ ...f, ticks: f.ticks - 1 }))
     .filter((f) => f.ticks > 0)
 
+  // Phase 7.5: sudden-death shrink — runs after flame deaths/expiry, before the
+  // result stamp, so shrink kills participate in this tick's win/draw check.
+  const newTick = state.tick + 1
+  const shrunk = shrinkPhase(newTick, state.shrinkIndex, grid, hidden, drops, remainingBombs, playersAfterDeaths)
+
   // Phase 8: result stamp — set once, never overwritten once decided.
   let result = state.result
   if (result === null) {
-    const alive = playersAfterDeaths.filter((p) => p.alive)
+    const alive = shrunk.players.filter((p) => p.alive)
     if (alive.length === 0) result = { kind: 'draw' }
     else if (alive.length === 1) result = { kind: 'win', winner: alive[0]!.id }
   }
 
   return {
     ...state,
-    tick: state.tick + 1,
-    grid,
-    hidden,
-    drops,
-    players: playersAfterDeaths,
-    bombs: remainingBombs,
+    tick: newTick,
+    grid: shrunk.grid,
+    hidden: shrunk.hidden,
+    drops: shrunk.drops,
+    players: shrunk.players,
+    bombs: shrunk.bombs,
     flames,
+    shrinkIndex: shrunk.shrinkIndex,
     result,
   }
 }
