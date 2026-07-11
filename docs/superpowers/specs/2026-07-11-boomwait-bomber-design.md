@@ -73,10 +73,11 @@ The three-strikes extraction — first implementation tasks of the plan, BEFORE
 any boomwait code. Built by extracting the chess-client copies (newest; carry
 the chess-4 resize hardening):
 
-- Contents (~477 lines today, 7 files): terminal session (raw mode, alt
-  screen, cleanup-on-exit), caps detection (truecolor/basic tiering), key
-  parser, input translate, quit-confirm, dismiss prompt, Claude status
-  listener.
+- Contents (6 files, ~358 lines): terminal session (raw mode, alt screen,
+  cleanup-on-exit), caps detection (truecolor/basic tiering), key parser,
+  quit-confirm, dismiss prompt, Claude status listener. `input/translate.ts`
+  stays in chess-client — it is a chess-move typed buffer (SAN entry), not
+  shared plumbing.
 - The extraction is a MOVE, not a redesign: the API surface is what those
   files already export. Anything chess-specific is generalized at extraction
   time; nothing speculative is added.
@@ -151,7 +152,7 @@ by node budget (never wall-clock):
 
 - New `BomberLobbyDO` + `BomberMatchDO`. wrangler.jsonc gets **migration tag
   v3 appended** — v1/v2 are never edited. Routes: `POST /bomber/join`,
-  WebSocket `/bomber/ws`. Existing chess/frag code untouched.
+  WebSocket `GET /bomber/match/:id/ws` (the chess route pattern). Existing chess/frag code untouched.
 - Lobby follows fragwait's `lobby-logic.ts` shape (already N-player): ~10s
   gathering window, up to 4 humans per match, bots backfill to exactly 4 at
   match start. No mid-match join.
