@@ -140,6 +140,10 @@ function resolveExplosions(state: BomberState, bombsAfterFuse: Bomb[]): Explosio
 
     for (const t of tiles) flameTiles.set(idx(t.x, t.y), t)
 
+    // Chain check keys off this tick's detonation flames only; a bomb on a
+    // LINGERING flame is unreachable via legal play: a flame born on a bomb tile
+    // chains it that tick, and a would-be placer standing on a lingering flame
+    // died the tick they stepped in (placement uses the pre-movement tile).
     const stillWaiting: Bomb[] = []
     for (const rb of remainingBombs) {
       if (flameTiles.has(idx(rb.x, rb.y))) queue.push(rb)
@@ -182,18 +186,24 @@ export function step(state: BomberState, inputs: (Input | null)[]): BomberState 
   // Active flames this tick: flames born this tick PLUS every carried-over flame
   // still present at the start of the tick (pre-expiry-decrement). Boundary: a
   // carried-over flame that expires during this tick's phase 7 is still lethal
-  // this tick — it was burning when players/drops landed on it. Consistent with
+  // this tick — it was burning when a player stepped onto it. Consistent with
   // the pinned expiry fixture (kill on creation tick; 0 flames after FLAME_TICKS).
   const activeFlameTiles = new Set<number>(flameTiles.keys())
   for (const f of state.flames) activeFlameTiles.add(idx(f.x, f.y))
 
-  // Existing drops caught in ANY active flame (new or lingering) are destroyed;
-  // freshly revealed drops survive the flame that exposed them.
-  const survivingDrops = state.drops.filter((d) => !activeFlameTiles.has(idx(d.x, d.y)))
+  // Drop destruction checks THIS tick's new flames only: drops are stationary,
+  // so only an arriving flame front can hit one. (Checking lingering flames too
+  // would delete every explosion-revealed drop one tick after reveal — the
+  // reveal tile is by construction still burning at T+1, and reveal is the only
+  // in-sim drop source.) Pre-existing drops are filtered first, then this
+  // tick's reveals appended, so a freshly revealed drop is never destroyed by
+  // the very ray that exposed it.
+  const survivingDrops = state.drops.filter((d) => !flameTiles.has(idx(d.x, d.y)))
   const drops = [...survivingDrops, ...revealedDrops]
 
   // Phase 6: deaths — any alive player standing on an active flame tile dies,
-  // including lingering flames from earlier ticks.
+  // including lingering flames from earlier ticks (players MOVE into flames;
+  // contrast with stationary drops above).
   const playersAfterDeaths = playersAfterBombDecrement.map((p) => {
     if (!p.alive) return p
     if (!activeFlameTiles.has(idx(p.x, p.y))) return p

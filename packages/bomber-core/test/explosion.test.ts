@@ -71,15 +71,24 @@ describe('bombs and explosions', () => {
     expect(s.players[0].alive).toBe(false)     // lingering flame kills late walkers
     expect(s.result).toEqual({ kind: 'win', winner: 1 }) // result stamped on the late-death path
   })
-  it('an exposed drop under a lingering flame is destroyed', () => {
+  it('a revealed drop survives its revealing flame; a LATER blast destroys it', () => {
     let s = clearArena(createMatch(1, NAMES, BOTS))
-    s = { ...s, bombs: [{ owner: 1, x: 3, y: 1, fuse: 1, range: 1 }] }
-    s = step(s, N)                             // flames born on (2,1),(4,1),(3,2) and center (3,1)
-    // hand-expose a drop onto (2,1) while the previous tick's flame still burns there
-    // (mirrors a chain revealing a drop into an already-burning tile)
-    s = { ...s, drops: [{ x: 2, y: 1, kind: 'range' }] }
+    // soft w/ hidden power-up at (3,1); bomb at (5,1) range 2 — left ray reaches (4,1) then
+    // (3,1): destroys the soft and stops. No player in any ray (p0 (1,1) and p1 (11,1) safe;
+    // (5,1) is not a pillar, y=1 odd). Reveal is the ONLY in-sim drop source, and the reveal
+    // tile is by construction a flamed tile — the drop must not be eaten by its own reveal.
+    s.grid[idx(3, 1)] = 'soft'; s.hidden[idx(3, 1)] = 'range'
+    s = { ...s, bombs: [{ owner: 1, x: 5, y: 1, fuse: 1, range: 2 }] }
+    s = step(s, N)                             // detonation: soft destroyed, drop revealed
+    expect(s.drops).toEqual([{ x: 3, y: 1, kind: 'range' }])
+    s = step(s, N)                             // T+1: revealing flame still lingers on (3,1) —
+    expect(s.drops).toHaveLength(1)            // it must NOT destroy the drop it exposed
+    s = ticks(s, FLAME_TICKS)                  // drop outlives the revealing flame entirely
+    expect(s.drops).toHaveLength(1)
+    // a SECOND, later explosion whose new flame front sweeps (3,1) DOES destroy it
+    s = { ...s, bombs: [{ owner: 1, x: 5, y: 1, fuse: 1, range: 2 }] }
     s = step(s, N)
-    expect(s.drops).toHaveLength(0)            // lingering flame destroys the exposed drop
+    expect(s.drops).toHaveLength(0)
   })
   it('sole survivor wins', () => {
     let s = clearArena(createMatch(1, NAMES, BOTS))
