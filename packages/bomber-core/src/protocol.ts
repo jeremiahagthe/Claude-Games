@@ -173,6 +173,25 @@ function isPlayerId(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < MAX_PLAYERS
 }
 
+// Generous-but-finite cap on wire stat/fuse/cooldown magnitudes. No legitimate
+// value comes close: bombCap/range grow only via collected power-ups (base +
+// POWERUP_COUNTS totals), fuse <= FUSE_TICKS (40), flame ticks <= FLAME_TICKS
+// (10), stepCooldown <= BASE_STEP_TICKS (5). The cap exists so a hostile snap
+// that passes parse can never decode (via fromWire) into absurd magnitudes.
+const MAX_WIRE_STAT = 255
+
+function isCoordX(v: unknown): v is number {
+  return isNonNegInt(v) && v < GRID_W
+}
+
+function isCoordY(v: unknown): v is number {
+  return isNonNegInt(v) && v < GRID_H
+}
+
+function isStat(v: unknown): v is number {
+  return isNonNegInt(v) && v <= MAX_WIRE_STAT
+}
+
 function isDirOrKeepOrNull(v: unknown): v is Dir | null | 'keep' {
   if (v === null || v === 'keep') return true
   return typeof v === 'string' && (DIR_LIST as string[]).includes(v)
@@ -193,34 +212,34 @@ function isWirePlayer(v: unknown): v is WirePlayer {
     isPlayerId(id) &&
     typeof name === 'string' &&
     (bot === 0 || bot === 1) &&
-    isNonNegInt(x) &&
-    isNonNegInt(y) &&
+    isCoordX(x) &&
+    isCoordY(y) &&
     (alive === 0 || alive === 1) &&
-    isNonNegInt(bombCap) &&
-    isNonNegInt(range) &&
-    isNonNegInt(speed) &&
+    isStat(bombCap) &&
+    isStat(range) &&
+    isStat(speed) &&
     isDirCode(dirCode) &&
-    isNonNegInt(stepCooldown) &&
-    isNonNegInt(activeBombs)
+    isStat(stepCooldown) &&
+    isStat(activeBombs)
   )
 }
 
 function isWireBomb(v: unknown): v is WireBomb {
   if (!Array.isArray(v) || v.length !== 5) return false
   const [owner, x, y, fuse, range] = v
-  return isPlayerId(owner) && isNonNegInt(x) && isNonNegInt(y) && isNonNegInt(fuse) && isNonNegInt(range)
+  return isPlayerId(owner) && isCoordX(x) && isCoordY(y) && isStat(fuse) && isStat(range)
 }
 
 function isWireFlame(v: unknown): v is WireFlame {
   if (!Array.isArray(v) || v.length !== 3) return false
   const [x, y, ticks] = v
-  return isNonNegInt(x) && isNonNegInt(y) && isNonNegInt(ticks)
+  return isCoordX(x) && isCoordY(y) && isStat(ticks)
 }
 
 function isWireDrop(v: unknown): v is WireDrop {
   if (!Array.isArray(v) || v.length !== 3) return false
   const [x, y, kindCode] = v
-  return isNonNegInt(x) && isNonNegInt(y) && isKindCode(kindCode)
+  return isCoordX(x) && isCoordY(y) && isKindCode(kindCode)
 }
 
 function isWireResult(v: unknown): v is WireResult {
@@ -323,6 +342,7 @@ export function parseBomberServerMsg(raw: unknown): BomberServerMsg | null {
     const startTick = o['startTick']
     if (!isPlayerId(you)) return null
     if (!isFiniteNum(seed)) return null
+    // Intentional asymmetry vs WireState.players (<= MAX_PLAYERS): start declares the full bot-padded roster, so exactly MAX_PLAYERS entries.
     if (!Array.isArray(names) || names.length !== MAX_PLAYERS || !names.every((n) => typeof n === 'string')) return null
     if (!Array.isArray(bots) || bots.length !== MAX_PLAYERS || !bots.every((b) => typeof b === 'boolean')) return null
     if (!isNonNegInt(startTick)) return null
