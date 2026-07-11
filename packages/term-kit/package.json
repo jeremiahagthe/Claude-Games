@@ -1,0 +1,14 @@
+{
+  "name": "termwait",
+  "version": "0.0.0",
+  "description": "termwait shared terminal plumbing: raw-mode session, capability detection, Claude busy-listener, key/mouse parsing",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json" }
+}
