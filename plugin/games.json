@@ -8,7 +8,7 @@
     {
       "id": "checkwait",
       "title": "checkwait — terminal blitz chess",
-      "cmd": "npx -y checkwait@0.1.6"
+      "cmd": "npx -y checkwait@0.1.7"
     }
   ]
 }

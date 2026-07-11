@@ -92,44 +92,54 @@ describe('renderBoard', () => {
     expect(out).toContain('\x1b[48;2;163;168;79m')
   })
 
-  // feel chess-4b: when only the 4-line HUD blocks sprite-size squares
-  // (default macOS windows are ~26 rows, one short of 8*3+4), the HUD
-  // collapses to 2 lines instead of falling back to tiny glyphs.
-  it('collapses the HUD to 2 lines at 26-27 rows so sprites still fit', () => {
-    const out = renderBoard(baseOpts({ cols: 100, rows: 26, opponentHandle: 'bot·easy' }))
+  // feel chess-4d: default terminals are wide but short (iTerm2 opens at
+  // 80x24 — the 24-row sprite board + ANY below-board HUD line can't fit),
+  // so with horizontal room the HUD sits BESIDE the board's top rows.
+  it('side HUD at 80x24 (iTerm2 default): sprites, board uses every row, HUD top-right', () => {
+    const out = renderBoard(baseOpts({ cols: 80, rows: 24, opponentHandle: 'bot·easy' }))
+    const stripped = strip(out).split('\r\n')
+    expect(stripped.length).toBe(24) // board only — no HUD rows below
+    expect(out).toMatch(/[▀▄█]/)
+    expect(stripped[0]).toContain('● 3:00') // clock beside rank 8
+    expect(stripped[2]).toContain('vs bot·easy')
+    expect(stripped[4]?.length).toBe(48) // rows past the HUD are pure board
+  })
+
+  it('side HUD is preferred whenever it fits — 80x30 renders 24 lines, clock on the first', () => {
+    const out = renderBoard(baseOpts())
+    const stripped = strip(out).split('\r\n')
+    expect(stripped.length).toBe(24)
+    expect(stripped[0]).toContain('● 3:00')
+  })
+
+  // The below-board ladder still serves narrow-but-tall windows where the
+  // side HUD has no room (feel chess-4b/4c rungs).
+  it('narrow-tall window: HUD collapses to 2 lines below the board (50x27)', () => {
+    const out = renderBoard(baseOpts({ cols: 50, rows: 27, opponentHandle: 'bot·easy' }))
     const stripped = strip(out).split('\r\n')
     expect(stripped.length).toBe(26) // 8*3 board + 2 HUD
-    expect(stripped.some((l) => l.length === 48)).toBe(true) // 6x3 sprite cells
-    expect(out).toMatch(/[▀▄█]/)
-    expect(stripped.some((l) => l.includes('● 3:00') && l.includes('vs bot·easy'))).toBe(true) // combined HUD line
-  })
-
-  it('compact HUD: status line wins over SAN history on the second line', () => {
-    const out = strip(renderBoard(baseOpts({ cols: 100, rows: 26, sanHistory: ['e4'], statusLine: '> h' })))
-    expect(out).toContain('> h')
-    expect(out).not.toContain('e4')
-  })
-
-  // feel chess-4c: iTerm2's default window is 80x25 — one row short of even
-  // the 2-line HUD, so the ladder ends at a single combined HUD line.
-  it('collapses the HUD to 1 line at 25 rows (iTerm2 default) so sprites still fit', () => {
-    const out = renderBoard(baseOpts({ cols: 80, rows: 25, opponentHandle: 'bot·easy' }))
-    const stripped = strip(out).split('\r\n')
-    expect(stripped.length).toBe(25) // 8*3 board + 1 HUD
     expect(out).toMatch(/[▀▄█]/)
     expect(stripped.some((l) => l.includes('● 3:00') && l.includes('vs bot·easy'))).toBe(true)
   })
 
-  it('1-line HUD: status text replaces the opponent tail but never the clocks', () => {
-    const out = strip(renderBoard(baseOpts({ cols: 80, rows: 25, opponentHandle: 'bot·easy', statusLine: '> h' })))
-    const hud = out.split('\r\n')[24]
-    expect(hud).toContain('● 3:00')
-    expect(hud).toContain('> h')
-    expect(hud).not.toContain('vs bot·easy')
+  it('compact HUD: status line wins over SAN history on the second line', () => {
+    const out = strip(renderBoard(baseOpts({ cols: 50, rows: 27, sanHistory: ['e4'], statusLine: '> h' })))
+    expect(out).toContain('> h')
+    expect(out).not.toContain('e4')
   })
 
-  it('falls back to 4x2 glyph cells when rows cannot fit sprites even with a 1-line HUD', () => {
-    const out = renderBoard(baseOpts({ cols: 100, rows: 24 })) // (24-1)/8 < 3
+  it('narrow-tall window: HUD collapses to 1 line below the board (50x25)', () => {
+    const out = renderBoard(baseOpts({ cols: 50, rows: 25, opponentHandle: 'bot·easy', statusLine: '> h' }))
+    const stripped = strip(out).split('\r\n')
+    expect(stripped.length).toBe(25) // 8*3 board + 1 HUD
+    const hud = stripped[24]
+    expect(hud).toContain('● 3:00')
+    expect(hud).toContain('> h')
+    expect(hud).not.toContain('vs bot·easy') // status outranks the opponent tail
+  })
+
+  it('falls back to 4x2 glyph cells when no layout can fit sprites', () => {
+    const out = renderBoard(baseOpts({ cols: 100, rows: 23 })) // floor(23/8) < 3 even with the side HUD
     const lines = strip(out).split('\r\n')
     expect(lines.some((l) => l.length === 32)).toBe(true)
     expect(lines.some((l) => l.length === 48)).toBe(false)
@@ -141,14 +151,14 @@ describe('renderBoard', () => {
     const out = renderBoard(baseOpts({ cols: 130, rows: 44 }))
     const lines = strip(out).split('\r\n')
     expect(lines.some((l) => l.length === 80)).toBe(true) // 8 * cw=10
-    expect(lines.length).toBe(44) // 8 * ch=5 + 4 HUD
+    expect(lines.length).toBe(40) // 8 * ch=5, side HUD — no rows below the board
   })
 
   it('caps square growth at 16x8 cells on huge terminals', () => {
     const out = renderBoard(baseOpts({ cols: 400, rows: 200 }))
     const lines = strip(out).split('\r\n')
-    expect(lines.some((l) => l.length === 128)).toBe(true) // 8 * cw=16
-    expect(lines.some((l) => l.length > 128)).toBe(false)
+    expect(lines.length).toBe(64) // 8 * ch=8
+    expect(lines.filter((l) => l.length === 128).length).toBeGreaterThan(50) // 8 * cw=16; top rows carry the side HUD
   })
 
   it('sprite mode never emits VT100 line attributes (feel chess-2 DECDHL retired)', () => {
@@ -160,8 +170,8 @@ describe('renderBoard', () => {
   it('every line ends with clear-to-EOL so a narrowing frame leaves no right-side residue', () => {
     const out = renderBoard(baseOpts())
     expect(out).toContain('\x1b[K\r\n')
-    // one ESC[K per line boundary (rows-1 joins at 80x30 → 27)
-    expect(out.split('\x1b[K\r\n').length).toBe(28)
+    // one ESC[K per line boundary (24 board lines at 80x30 side-HUD → 23 joins)
+    expect(out.split('\x1b[K\r\n').length).toBe(24)
   })
 
   it('sprite-mode cursor lifts the square background instead of underlining (no streaks)', () => {

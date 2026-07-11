@@ -177,7 +177,8 @@ function pieceLetter(type: PieceType, color: Color): string {
 interface CellGeometry {
   cw: number
   ch: number
-  hudLines: number // 4 = full HUD; 2 = compact (traded for sprite-size squares)
+  hudLines: number // 4 = full HUD; 2/1 = compact rungs (below-board layouts only)
+  sideHud: boolean // HUD beside the board (top-right) instead of below it
 }
 
 // Full HUD is 4 lines (clock, san/last-move, opponent, status); the compact
@@ -186,25 +187,30 @@ interface CellGeometry {
 // the spec-recommended 100x28 because the old threshold only fell back
 // below 22 rows).
 export const HUD_LINES = 4
-// The HUD ladder: full 4 lines, then 2, then 1 — each step tried only when
-// the previous one can't fit sprite-size squares. The 1-line rung exists for
-// iTerm2's default 80x25 window (feel chess-4c): 24 board rows + 1.
+// The below-board HUD ladder: full 4 lines, then 2, then 1 — each rung tried
+// only when the previous can't fit sprite-size squares (feel chess-4b/4c).
 const HUD_LADDER = [HUD_LINES, 2, 1] as const
-const NARROW: CellGeometry = { cw: 4, ch: 2, hudLines: HUD_LINES }
+const NARROW: CellGeometry = { cw: 4, ch: 2, hudLines: HUD_LINES, sideHud: false }
 const MIN_WIDE_CH = 3 // below this, cells are too coarse for sprites → NARROW glyphs
 const MAX_CH = 8 // squares stop growing at 16x8 cells — beyond this the board dwarfs the HUD
+const SIDE_HUD_MIN_COLS = 26 // room the side HUD needs right of the board
 
 // Adaptive square size (feel chess-3): pick the largest square that fits the
 // terminal, keeping cw = 2*ch (terminal cells are ~1:2, so the square — and
 // its cw x 2*ch pixel grid — stays visually square). Bigger window = bigger
-// squares = bigger piece sprites. When only the 4-line HUD stands between a
-// terminal and sprite-size squares (feel chess-4b: default macOS windows are
-// ~26 rows, one short of 8*3+4), collapse the HUD to 2 lines instead of
-// falling back to tiny glyphs.
+// squares = bigger piece sprites.
+//
+// Layout choice (feel chess-4d): default terminals are WIDE but SHORT —
+// iTerm2 opens at 80x24, where the 24-row sprite board plus ANY below-board
+// HUD line can never fit. So when there's horizontal room, the HUD moves
+// BESIDE the board (top-right) and the board gets every row. The below-board
+// ladder remains for narrow-but-tall windows.
 export function cellSize(cols: number, rows: number): CellGeometry {
+  const side = Math.min(Math.floor(rows / 8), Math.floor((cols - SIDE_HUD_MIN_COLS) / 16), MAX_CH)
+  if (side >= MIN_WIDE_CH) return { cw: 2 * side, ch: side, hudLines: HUD_LINES, sideHud: true }
   for (const hud of HUD_LADDER) {
     const ch = Math.min(Math.floor((rows - hud) / 8), Math.floor(cols / 16), MAX_CH)
-    if (ch >= MIN_WIDE_CH) return { cw: 2 * ch, ch, hudLines: hud }
+    if (ch >= MIN_WIDE_CH) return { cw: 2 * ch, ch, hudLines: hud, sideHud: false }
   }
   return NARROW
 }
@@ -287,7 +293,7 @@ function centerPad(s: string, width: number): string {
 }
 
 export function renderBoard(o: RenderOpts): string {
-  const { cw, ch, hudLines } = cellSize(o.cols, o.rows)
+  const { cw, ch, hudLines, sideHud } = cellSize(o.cols, o.rows)
   const ranks = boardRanks(o.selfColor)
   const files = boardFiles(o.selfColor)
   const legalSet = new Set(o.legalTargets)
@@ -379,31 +385,44 @@ export function renderBoard(o: RenderOpts): string {
     }
   }
 
-  // Compact 4-line HUD (feel-1): SAN history when available, else the
-  // coordinate last-move line — never both, so board + HUD fits the rows
-  // budget cellSize() sized the squares against. Each HUD line is truncated
-  // to the terminal width — a wrapped line would scroll the whole frame
-  // (feel chess-4). When the window is too small for sprite pieces, the
-  // status line doubles as the how-to-fix hint.
+  // HUD content (feel-1): SAN history when available, else the coordinate
+  // last-move line — never both. Every placed line is truncated — a wrapped
+  // line would scroll the whole frame (feel chess-4). When the window is too
+  // small for sprite pieces, the status line doubles as the how-to-fix hint.
   const hint = o.colorMode === 'truecolor' && !sprites ? 'enlarge the window for bigger pieces' : ''
-  const hudWidth = Math.max(1, o.cols - 1)
   const movesLine = o.sanHistory && o.sanHistory.length > 0 ? sanHistoryLine(o.sanHistory) : lastMoveLine(o.lastMove)
-  if (hudLines === HUD_LINES) {
-    lines.push(clockLine(o.state, o.selfColor).slice(0, hudWidth))
-    lines.push(movesLine.slice(0, hudWidth))
-    lines.push((o.opponentHandle ? `vs ${o.opponentHandle}` : '').slice(0, hudWidth))
-    lines.push((o.statusLine || hint).slice(0, hudWidth))
-  } else if (hudLines === 2) {
-    // Compact HUD (feel chess-4b): the two lines that matter — clocks+who,
-    // then the interactive line (status beats SAN history when both exist).
-    const who = o.opponentHandle ? `  vs ${o.opponentHandle}` : ''
-    lines.push((clockLine(o.state, o.selfColor) + who).slice(0, hudWidth))
-    lines.push((o.statusLine || movesLine).slice(0, hudWidth))
+  const clock = clockLine(o.state, o.selfColor)
+  const who = o.opponentHandle ? `vs ${o.opponentHandle}` : ''
+  const status = o.statusLine || hint
+
+  if (sideHud) {
+    // Side HUD (feel chess-4d): appended right of the board's top rows, so
+    // the board can use every terminal row. Board lines end in RESET, so
+    // plain text composes cleanly; the ESC[K join clears the rest.
+    const sideWidth = Math.max(1, o.cols - 8 * cw - 2)
+    const hud = [clock, movesLine, who, status]
+    for (let i = 0; i < hud.length && i < lines.length; i++) {
+      const text = hud[i] ?? ''
+      if (text) lines[i] += ' ' + text.slice(0, sideWidth)
+    }
   } else {
-    // 1-line HUD (feel chess-4c, iTerm2's default 80x25): clocks always,
-    // then whichever of status/opponent matters more right now.
-    const tail = o.statusLine || (o.opponentHandle ? `vs ${o.opponentHandle}` : '')
-    lines.push((clockLine(o.state, o.selfColor) + (tail ? `  ${tail}` : '')).slice(0, hudWidth))
+    const hudWidth = Math.max(1, o.cols - 1)
+    if (hudLines === HUD_LINES) {
+      lines.push(clock.slice(0, hudWidth))
+      lines.push(movesLine.slice(0, hudWidth))
+      lines.push(who.slice(0, hudWidth))
+      lines.push(status.slice(0, hudWidth))
+    } else if (hudLines === 2) {
+      // Compact HUD (feel chess-4b): the two lines that matter — clocks+who,
+      // then the interactive line (status beats SAN history when both exist).
+      lines.push((clock + (who ? `  ${who}` : '')).slice(0, hudWidth))
+      lines.push((o.statusLine || movesLine).slice(0, hudWidth))
+    } else {
+      // 1-line HUD (feel chess-4c): clocks always, then whichever of
+      // status/opponent matters more right now.
+      const tail = o.statusLine || who
+      lines.push((clock + (tail ? `  ${tail}` : '')).slice(0, hudWidth))
+    }
   }
 
   // Never emit more lines than the terminal has — overflow scrolls the TOP
