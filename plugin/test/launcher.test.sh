@@ -254,32 +254,38 @@ STATE=$(cat "$T_HOME/.fragwait/rotation.json")
 echo "PASS: registry entry with no cmd leaves rotation state completely untouched"
 
 # ------------------------------------------------------------------------
-# Test 9: real two-entry registry (fragwait + checkwait) alternates on
-# consecutive launches. Stored "next" is (picked_index + 1), not modded to
-# the registry length, so it climbs 1 -> 2 -> 1 (idx wraps at read time via
-# next % games.length) rather than 0 -> 1 -> 0 -- see the wraparound comment
-# on the 3-game rotation test above for why this is intentional.
+# Test 9: real three-entry registry (fragwait + checkwait + boomwait) cycles
+# on consecutive launches. Stored "next" is (picked_index + 1), not modded to
+# the registry length, so it climbs 1 -> 2 -> 3 -> 1 (idx wraps at read time
+# via next % games.length) rather than 0 -> 1 -> 2 -> 0 -- see the
+# wraparound comment on the synthetic 3-game rotation test above for why
+# this is intentional.
 # ------------------------------------------------------------------------
 T_HOME=$(mktemp -d)
 T_ROOT=$(mktemp -d)
 cp "$REPO_ROOT/plugin/games.json" "$T_ROOT/games.json"
 
-RECORD="$WORK/tmux_two_entry.txt"
+RECORD="$WORK/tmux_three_entry.txt"
 : > "$RECORD"
 OUT1=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT1" | grep -q "fragwait" || fail "two-entry rotation pick 1 expected fragwait, got: $OUT1"
-grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "two-entry rotation state after pick 1 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "$OUT1" | grep -q "fragwait" || fail "three-entry rotation pick 1 expected fragwait, got: $OUT1"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "three-entry rotation state after pick 1 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 
 OUT2=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT2" | grep -q "checkwait" || fail "two-entry rotation pick 2 expected checkwait, got: $OUT2"
-grep -q '"next":2' "$T_HOME/.fragwait/rotation.json" || fail "two-entry rotation state after pick 2 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "$OUT2" | grep -q "checkwait" || fail "three-entry rotation pick 2 expected checkwait, got: $OUT2"
+grep -q '"next":2' "$T_HOME/.fragwait/rotation.json" || fail "three-entry rotation state after pick 2 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 
 OUT3=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT3" | grep -q "fragwait" || fail "two-entry rotation pick 3 expected fragwait again, got: $OUT3"
-grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "two-entry rotation state after pick 3 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
-echo "PASS: real fragwait/checkwait registry alternates on consecutive launches"
+echo "$OUT3" | grep -q "boomwait" || fail "three-entry rotation pick 3 expected boomwait, got: $OUT3"
+grep -q '"next":3' "$T_HOME/.fragwait/rotation.json" || fail "three-entry rotation state after pick 3 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT4=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT4" | grep -q "fragwait" || fail "three-entry rotation pick 4 expected fragwait again, got: $OUT4"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "three-entry rotation state after pick 4 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "PASS: real fragwait/checkwait/boomwait registry cycles on consecutive launches"
 
 echo "PASS: games-launch rotation + terminal-surface detection all behave"

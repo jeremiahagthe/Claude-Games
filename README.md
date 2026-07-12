@@ -27,6 +27,7 @@ per-kill so getting interrupted never costs you progress.
 
 - **fragwait** (game 1) — terminal FPS deathmatch, ships today.
 - **checkwait** (game 2) — terminal blitz chess, ships today.
+- **boomwait** (game 3) — terminal bomber, ships today.
 - More games rotate in over time as the plugin updates — `/games` always
   picks the next one in rotation, so repeat plays surface new games
   automatically.
@@ -106,6 +107,35 @@ the same Cloudflare Worker deployment).
 | Arrow keys, then `Enter` | Move a board cursor and confirm, for mouse-free play |
 | `q` / `r` / `b` / `n` (on promotion) | Pick the promotion piece |
 | `Q` / `Esc` | Quit (requires a second press to confirm — online, this resigns the game) |
+
+## boomwait — terminal bomber
+
+**Game 3: boomwait** — 4-player last-man-standing bomberman on a 13×11 grid,
+the same 3–6 minute session shape as a fragwait or checkwait match. Online
+PvP via matchmaking by default — the lobby gathers players for ~10s and bots
+always backfill any empty slots, so a match is never short of four players.
+Offline play drops you straight into a match against 3 bots instead.
+
+### Standalone play
+
+```
+npx -y boomwait
+```
+
+Add `--offline` to skip matchmaking and play a local match against 3 bots
+only, `--difficulty easy|normal|hard` to tune the bots (default `easy`),
+`--name <handle>` to set your display name, and `--server <url>` to point at
+a self-hosted worker (boomwait's matchmaking shares the same Cloudflare
+Worker deployment as fragwait's deathmatch and checkwait's matchmaking).
+
+### boomwait controls
+
+| Input | Action |
+|---|---|
+| `W`/`↑`, `A`/`←`, `S`/`↓`, `D`/`→` | Move (latched — a direction holds until you tap the opposite one to stop, or a new direction to turn) |
+| `Space` | Drop a bomb |
+| `Q` / `Esc` | Quit (requires a second press to confirm) |
+| `Ctrl-C` | Quit instantly |
 
 ## How the Claude integration works
 

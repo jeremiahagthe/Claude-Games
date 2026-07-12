@@ -9,6 +9,11 @@
       "id": "checkwait",
       "title": "checkwait — terminal blitz chess",
       "cmd": "npx -y checkwait@0.1.7"
+    },
+    {
+      "id": "boomwait",
+      "title": "boomwait — terminal bomber",
+      "cmd": "npx -y boomwait@0.1.0"
     }
   ]
 }
