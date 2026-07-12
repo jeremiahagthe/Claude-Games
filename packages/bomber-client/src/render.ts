@@ -272,7 +272,7 @@ function playerHudRow(p: PlayerState, isYou: boolean, mode: ColorMode): string {
         ? `${ESC}[${TEAM_BASIC[p.id]!}m■${RESET}`
         : '#'
   const mark = isYou ? '▸' : ' '
-  const dead = p.alive ? ' †' : ''
+  const dead = p.alive ? '' : ' †' // dagger marks the DEAD (same polarity as playerLine above)
   const stats = p.alive ? ` b${p.bombCap}r${p.range}s${p.speed}` : ''
   const plain = `${mark}${p.name}${dead}${stats}`
   return swatch + plain.slice(0, SIDE_TEXT_WIDTH - 1)

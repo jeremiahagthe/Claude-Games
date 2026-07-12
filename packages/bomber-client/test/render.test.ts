@@ -98,6 +98,19 @@ describe('side HUD spec content (Fix 3)', () => {
     for (const l of lines) expect(strip(l).length).toBeLessThanOrEqual(80)
   })
 
+  it('death dagger marks dead players only: † on the dead row, never on alive rows', () => {
+    const base = createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+    const s = { ...base, players: base.players.map((p) => (p.id === 2 ? { ...p, alive: false } : p)) }
+    const flat = strip(renderFrame(s, 0, { r: 2, sideHud: true, glyph: false }, ''))
+    const hudRowFor = (name: string): string => {
+      const row = flat.split('\n').find((l) => l.includes(name))
+      expect(row, `HUD row for ${name}`).toBeDefined()
+      return row!
+    }
+    expect(hudRowFor('bot2')).toContain('†') // the dead player carries the dagger
+    for (const alive of ['you', 'bot1', 'bot3']) expect(hudRowFor(alive)).not.toContain('†')
+  })
+
   it('a colored swatch does not corrupt the frame: every opened SGR escape on a HUD line is balanced by a reset', () => {
     const s = createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
     const out = renderFrame(s, 0, { r: 2, sideHud: true, glyph: false }, '')
