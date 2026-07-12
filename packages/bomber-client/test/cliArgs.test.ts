@@ -41,6 +41,9 @@ describe('parseArgs (existing behavior, unaffected)', () => {
     expect(() => parseArgs(['--server'])).toThrow(/invalid --server/)
     expect(() => parseArgs(['--offline', '--server'])).toThrow(/invalid --server/)
   })
+  it('throws when --name is the last arg with no value (same fail-fast as --server)', () => {
+    expect(() => parseArgs(['--name'])).toThrow(/invalid --name/)
+  })
   it('--mute defaults to false, set true with the flag', () => {
     expect(parseArgs([]).mute).toBe(false)
     expect(parseArgs(['--mute']).mute).toBe(true)

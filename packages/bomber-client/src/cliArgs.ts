@@ -23,8 +23,11 @@ export function parseArgs(argv: string[]): CliOpts {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--offline') opts.offline = true
-    else if (a === '--name') opts.name = argv[++i]
-    else if (a === '--server') {
+    else if (a === '--name') {
+      const v = argv[++i]
+      if (v === undefined) throw new Error('invalid --name: expected a value')
+      opts.name = v
+    } else if (a === '--server') {
       const v = argv[++i]
       if (v === undefined) throw new Error('invalid --server: expected a URL')
       opts.server = v

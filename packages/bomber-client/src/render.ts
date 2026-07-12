@@ -177,36 +177,53 @@ function spriteArena(s: BomberState, occ: Occupancy, r: number): string[] {
   return lines
 }
 
+// Basic-SGR (30-107 range) fallbacks for the truecolor palette above — glyph
+// mode usually exists BECAUSE the terminal isn't truecolor (Apple Terminal
+// detects as '256'), so it must not emit 24-bit escapes there. Mirrors chess
+// board-render.ts's dedicated basic-mode branch.
+const TEAM_BASIC: readonly number[] = [91, 94, 92, 93] // bright red/blue/green/yellow
+const FLAME_BASIC = 93
+const BOMB_SPARK_BASIC: readonly number[] = [97, 93, 91] // white → yellow → red, matching the RGB fuse ramp
+const DROP_BASIC: Record<PowerupKind, number> = { bomb: 97, range: 96, speed: 93 }
+const SOFT_BASIC = 33
+
 // Glyph-mode arena: 2 cols/tile letters — legible with no truecolor
-// compositing and no minimum cell height.
-function glyphArena(s: BomberState, occ: Occupancy): string[] {
+// compositing and no minimum cell height. Color budget follows the terminal:
+// truecolor keeps 24-bit fg (the r<2 tiny-window case), '256' uses basic SGR,
+// mono emits no escapes at all (letters carry everything; soft's ▒ shade
+// glyph also drops to ASCII there — some mono terminals are ASCII-only).
+function glyphArena(s: BomberState, occ: Occupancy, mode: ColorMode): string[] {
+  const paint = (text: string, rgb: readonly [number, number, number], basic: number): string =>
+    mode === 'truecolor' ? fg(rgb) + text + RESET : mode === '256' ? `${ESC}[${basic}m` + text + RESET : text
+
   const lines: string[] = []
   for (let ty = 0; ty < GRID_H; ty++) {
     let line = ''
     for (let tx = 0; tx < GRID_W; tx++) {
       const i = idx(tx, ty)
       if (occ.flameAt.has(i)) {
-        line += fg(FLAME_FG_RGB) + '* ' + RESET
+        line += paint('* ', FLAME_FG_RGB, FLAME_BASIC)
         continue
       }
       const playerId = occ.playerAt.get(i)
       if (playerId !== undefined) {
-        line += fg(TEAM_RGB[playerId]!) + '@' + String(playerId + 1) + RESET
+        line += paint('@' + String(playerId + 1), TEAM_RGB[playerId]!, TEAM_BASIC[playerId]!)
         continue
       }
       const bomb = occ.bombAt.get(i)
       if (bomb) {
-        line += fg(BOMB_SPARK_RGB[bombFuseStage(bomb.fuse)]!) + 'o ' + RESET
+        const stage = bombFuseStage(bomb.fuse)
+        line += paint('o ', BOMB_SPARK_RGB[stage]!, BOMB_SPARK_BASIC[stage]!)
         continue
       }
       const drop = occ.dropAt.get(i)
       if (drop) {
-        line += fg(DROP_RGB[drop.kind]) + drop.kind[0]!.toUpperCase() + ' ' + RESET
+        line += paint(drop.kind[0]!.toUpperCase() + ' ', DROP_RGB[drop.kind], DROP_BASIC[drop.kind])
         continue
       }
       const cell = s.grid[i]
       if (cell === 'hard') line += '##'
-      else if (cell === 'soft') line += fg(SOFT_RGB) + '▒▒' + RESET
+      else if (cell === 'soft') line += mode === 'mono' ? 'xx' : paint('▒▒', SOFT_RGB, SOFT_BASIC)
       else line += '  '
     }
     lines.push(line)
@@ -241,10 +258,10 @@ function playerLine(p: PlayerState, isYou: boolean): string {
 // terminal it was computed against).
 const SIDE_TEXT_WIDTH = 26
 
-export function renderFrame(s: BomberState, you: number, layout: Layout, claude: string): string {
+export function renderFrame(s: BomberState, you: number, layout: Layout, claude: string, mode: ColorMode = 'truecolor'): string {
   const { r, sideHud, glyph } = layout
   const occ = buildOccupancy(s)
-  const arenaLines = glyph ? glyphArena(s, occ) : spriteArena(s, occ, r)
+  const arenaLines = glyph ? glyphArena(s, occ, mode) : spriteArena(s, occ, r)
   const boardCols = glyph ? GRID_W * 2 : GRID_W * 2 * r
 
   const clock = fmtClock(s.tick)
@@ -272,6 +289,8 @@ export function renderFrame(s: BomberState, you: number, layout: Layout, claude:
 
   // Per-line clear-to-EOL (ESC[K) kills resize residue to the right of every
   // line (checkwait/chess-4 lesson); trailing ESC[J kills residue below —
-  // the renderer never scrolls, so both are always safe.
-  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + RESET + `${ESC}[J`
+  // the renderer never scrolls, so both are always safe. Mono frames carry no
+  // SGR at all, so there is nothing to reset there.
+  const tail = mode === 'mono' ? '' : RESET
+  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + tail + `${ESC}[J`
 }

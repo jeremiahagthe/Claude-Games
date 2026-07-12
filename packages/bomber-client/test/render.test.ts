@@ -29,3 +29,42 @@ describe('the 80x24 gate', () => {
     for (const n of ['you', 'bot1', 'bot2', 'bot3']) expect(flat).toContain(n)
   })
 })
+
+// Review fix (Task 9): glyph mode is selected precisely BECAUSE the terminal
+// often can't do truecolor (Apple Terminal detects as '256'), so the glyph
+// renderer must honor the color mode instead of unconditionally emitting
+// 24-bit SGR — mirroring chess board-render.ts's dedicated basic-mode branch.
+describe('glyph mode honors the terminal color mode', () => {
+  const s = () => createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+  const GLYPH = { r: 1, sideHud: false, glyph: true }
+
+  it("'256' glyph frame: no truecolor SGR, basic SGR colors instead", () => {
+    const out = renderFrame(s(), 0, GLYPH, 'Claude working…', '256')
+    expect(out).not.toContain('38;2;')
+    expect(out).not.toContain('48;2;')
+    expect(out).toMatch(/\x1b\[9[0-7]m/) // bright basic fg codes carry teams/entities
+  })
+
+  it("'mono' glyph frame: no color escapes at all — letters only", () => {
+    const out = renderFrame(s(), 0, GLYPH, 'Claude working…', 'mono')
+    expect(out).not.toMatch(/\x1b\[[0-9;]*m/)
+    expect(strip(out)).toContain('@1') // players still drawn, as plain letters
+  })
+
+  it('mono soft blocks fall back to ASCII (no ▒ shade glyph)', () => {
+    const out = strip(renderFrame(s(), 0, GLYPH, '', 'mono'))
+    expect(out).not.toContain('▒')
+    expect(out).toContain('xx')
+  })
+
+  it('truecolor glyph (r<2 tiny-window case) may keep truecolor SGR', () => {
+    const out = renderFrame(s(), 0, GLYPH, '', 'truecolor')
+    expect(out).toContain('38;2;')
+  })
+
+  it('mode defaults to truecolor (the pinned suite calls renderFrame without it)', () => {
+    const withDefault = renderFrame(s(), 0, GLYPH, '')
+    const explicit = renderFrame(s(), 0, GLYPH, '', 'truecolor')
+    expect(withDefault).toBe(explicit)
+  })
+})
