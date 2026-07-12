@@ -1,0 +1,277 @@
+import type { Bomb, BomberState, Drop, Flame, PlayerState, PowerupKind } from 'boomwait-core'
+import { GRID_H, GRID_W, FUSE_TICKS, SHRINK_START_TICK, TICK_RATE, idx } from 'boomwait-core'
+import type { ColorMode } from 'termwait'
+import { SPRITES, scaleMask } from './sprites.js'
+
+export interface Layout {
+  r: number
+  sideHud: boolean
+  glyph: boolean
+}
+
+// Board = 26r cols x 11r rows (tile = 2r cols x r rows; GRID_W=13 tiles wide,
+// GRID_H=11 tall). Largest r wins, preferring a side HUD (board gets every
+// row — the checkwait/chess-4d lesson: default terminals are wide but short,
+// so a below-board HUD line can starve the board of rows before the board
+// ever needs the extra width) whenever it fits; the below-board ladder only
+// matters for narrow-but-tall windows. r<2 or non-truecolor drops to glyph
+// mode (2 cols/tile letters — an 8x8 pixel sprite scaled into <2 rows is
+// illegible, and non-truecolor terminals can't composite the half-block fg/bg
+// pairs sprites rely on).
+function fitsSideHud(r: number, cols: number, rows: number): boolean {
+  return 11 * r + 1 <= rows && 26 * r + 27 <= cols
+}
+function fitsBelowHud(r: number, cols: number, rows: number): boolean {
+  return 11 * r + 1 <= rows && 26 * r <= cols && 11 * r + 8 <= rows
+}
+
+export function chooseLayout(cols: number, rows: number, mode: ColorMode): Layout {
+  const upperBound = Math.floor((rows - 1) / 11)
+  let foundR = 0
+  let foundSideHud = false
+  for (let r = Math.max(upperBound, 1); r >= 1; r--) {
+    const sideOk = fitsSideHud(r, cols, rows)
+    const belowOk = fitsBelowHud(r, cols, rows)
+    if (sideOk || belowOk) {
+      foundR = r
+      foundSideHud = sideOk // side HUD preferred whenever it fits
+      break
+    }
+  }
+  const glyph = mode !== 'truecolor' || foundR < 2
+  return { r: Math.max(foundR, 1), sideHud: foundSideHud, glyph }
+}
+
+const ESC = '\x1b'
+const RESET = `${ESC}[0m`
+function bg(rgb: readonly [number, number, number]): string {
+  return `${ESC}[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
+}
+function fg(rgb: readonly [number, number, number]): string {
+  return `${ESC}[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`
+}
+
+const HARD_RGB: readonly [number, number, number] = [92, 92, 100]
+const SOFT_RGB: readonly [number, number, number] = [163, 116, 58]
+const SOFT_TEXTURE_RGB: readonly [number, number, number] = [110, 78, 38]
+const EMPTY_RGB: readonly [number, number, number] = [40, 92, 48]
+const FLAME_BG_RGB: readonly [number, number, number] = [120, 30, 20]
+const FLAME_FG_RGB: readonly [number, number, number] = [255, 200, 60]
+const BOMB_SPARK_RGB: readonly (readonly [number, number, number])[] = [
+  [255, 255, 255],
+  [255, 210, 60],
+  [255, 60, 40],
+]
+// 4 distinct, high-contrast team colors (feel-1 lesson: every fg must
+// contrast every bg it can land on — floor/soft/hard are all mid-dark, so
+// bright saturated hues stay legible on all three).
+const TEAM_RGB: readonly (readonly [number, number, number])[] = [
+  [230, 70, 70], // p0 red
+  [70, 150, 235], // p1 blue
+  [110, 220, 110], // p2 green
+  [235, 205, 70], // p3 gold
+]
+const DROP_RGB: Record<PowerupKind, readonly [number, number, number]> = {
+  bomb: [210, 210, 220],
+  range: [80, 225, 225],
+  speed: [255, 230, 90],
+}
+
+function bombFuseStage(fuse: number): 0 | 1 | 2 {
+  if (fuse > (2 * FUSE_TICKS) / 3) return 0
+  if (fuse > FUSE_TICKS / 3) return 1
+  return 2
+}
+
+interface Occupancy {
+  flameAt: Map<number, Flame>
+  bombAt: Map<number, Bomb>
+  playerAt: Map<number, number> // tile idx -> player id (last-in-order wins)
+  dropAt: Map<number, Drop>
+}
+
+function buildOccupancy(s: BomberState): Occupancy {
+  const flameAt = new Map<number, Flame>()
+  for (const f of s.flames) flameAt.set(idx(f.x, f.y), f)
+  const bombAt = new Map<number, Bomb>()
+  for (const b of s.bombs) bombAt.set(idx(b.x, b.y), b)
+  const playerAt = new Map<number, number>()
+  for (const p of s.players) if (p.alive) playerAt.set(idx(p.x, p.y), p.id)
+  const dropAt = new Map<number, Drop>()
+  for (const d of s.drops) dropAt.set(idx(d.x, d.y), d)
+  return { flameAt, bombAt, playerAt, dropAt }
+}
+
+interface TileVisual {
+  bgRgb: readonly [number, number, number]
+  maskKey: string | null
+  fgRgb: readonly [number, number, number]
+}
+
+// Draw priority: flame > player > bomb > drop > bare cell — a flame front
+// visually consumes whatever was under it, and a player standing on their own
+// (or anyone's) bomb/drop is the thing you're tracking, not the tile.
+function tileVisual(s: BomberState, occ: Occupancy, x: number, y: number): TileVisual {
+  const i = idx(x, y)
+  const cell = s.grid[i]
+  const baseBg = cell === 'hard' ? HARD_RGB : cell === 'soft' ? SOFT_RGB : EMPTY_RGB
+
+  if (occ.flameAt.has(i)) return { bgRgb: FLAME_BG_RGB, maskKey: 'flame', fgRgb: FLAME_FG_RGB }
+
+  const playerId = occ.playerAt.get(i)
+  if (playerId !== undefined) return { bgRgb: baseBg, maskKey: `p${playerId}`, fgRgb: TEAM_RGB[playerId]! }
+
+  const bomb = occ.bombAt.get(i)
+  if (bomb) {
+    const stage = bombFuseStage(bomb.fuse)
+    return { bgRgb: baseBg, maskKey: `bomb${stage}`, fgRgb: BOMB_SPARK_RGB[stage]! }
+  }
+
+  const drop = occ.dropAt.get(i)
+  if (drop) return { bgRgb: baseBg, maskKey: `drop-${drop.kind}`, fgRgb: DROP_RGB[drop.kind] }
+
+  if (cell === 'soft') return { bgRgb: baseBg, maskKey: 'soft', fgRgb: SOFT_TEXTURE_RGB }
+  return { bgRgb: baseBg, maskKey: null, fgRgb: baseBg }
+}
+
+// Sprite-mode arena: half-block ▀▄ pixel compositing (chess-4's
+// board-render.ts pipeline), one 2r x 2r pixel grid per tile.
+function spriteArena(s: BomberState, occ: Occupancy, r: number): string[] {
+  const px = 2 * r
+  const scaleCache = new Map<string, boolean[][]>()
+  const scaled = (key: string): boolean[][] => {
+    let m = scaleCache.get(key)
+    if (!m) {
+      m = scaleMask(SPRITES[key]!, px)
+      scaleCache.set(key, m)
+    }
+    return m
+  }
+
+  const lines: string[] = []
+  for (let ty = 0; ty < GRID_H; ty++) {
+    for (let subRow = 0; subRow < r; subRow++) {
+      let line = ''
+      for (let tx = 0; tx < GRID_W; tx++) {
+        const v = tileVisual(s, occ, tx, ty)
+        let cell = bg(v.bgRgb)
+        if (v.maskKey) {
+          const mask = scaled(v.maskKey)
+          const topRow = mask[2 * subRow]
+          const botRow = mask[2 * subRow + 1]
+          const sprFg = fg(v.fgRgb)
+          for (let px_ = 0; px_ < px; px_++) {
+            const top = topRow?.[px_] === true
+            const bot = botRow?.[px_] === true
+            if (!top && !bot) cell += ' '
+            else cell += sprFg + (top && bot ? '█' : top ? '▀' : '▄')
+          }
+        } else {
+          cell += ' '.repeat(px)
+        }
+        line += cell + RESET
+      }
+      lines.push(line)
+    }
+  }
+  return lines
+}
+
+// Glyph-mode arena: 2 cols/tile letters — legible with no truecolor
+// compositing and no minimum cell height.
+function glyphArena(s: BomberState, occ: Occupancy): string[] {
+  const lines: string[] = []
+  for (let ty = 0; ty < GRID_H; ty++) {
+    let line = ''
+    for (let tx = 0; tx < GRID_W; tx++) {
+      const i = idx(tx, ty)
+      if (occ.flameAt.has(i)) {
+        line += fg(FLAME_FG_RGB) + '* ' + RESET
+        continue
+      }
+      const playerId = occ.playerAt.get(i)
+      if (playerId !== undefined) {
+        line += fg(TEAM_RGB[playerId]!) + '@' + String(playerId + 1) + RESET
+        continue
+      }
+      const bomb = occ.bombAt.get(i)
+      if (bomb) {
+        line += fg(BOMB_SPARK_RGB[bombFuseStage(bomb.fuse)]!) + 'o ' + RESET
+        continue
+      }
+      const drop = occ.dropAt.get(i)
+      if (drop) {
+        line += fg(DROP_RGB[drop.kind]) + drop.kind[0]!.toUpperCase() + ' ' + RESET
+        continue
+      }
+      const cell = s.grid[i]
+      if (cell === 'hard') line += '##'
+      else if (cell === 'soft') line += fg(SOFT_RGB) + '▒▒' + RESET
+      else line += '  '
+    }
+    lines.push(line)
+  }
+  return lines
+}
+
+function fmtClock(tick: number): string {
+  const totalSec = Math.max(0, Math.floor(tick / TICK_RATE))
+  const m = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return `${m}:${String(sec).padStart(2, '0')}`
+}
+
+// Sudden-death shrink starts at SHRINK_START_TICK; the HUD counts down to it,
+// then flags it active once the spiral starts closing tiles.
+function shrinkStatus(tick: number): string {
+  if (tick >= SHRINK_START_TICK) return '⚠ shrinking'
+  const remainSec = Math.ceil((SHRINK_START_TICK - tick) / TICK_RATE)
+  return `shrink in ${remainSec}s`
+}
+
+function playerLine(p: PlayerState, isYou: boolean): string {
+  const mark = isYou ? '▸' : ' '
+  const dead = p.alive ? '' : ' †'
+  return `${mark}${p.name}${dead}`
+}
+
+// Fixed side-HUD text budget (matches the `+ 27` in fitsSideHud — constant
+// regardless of r, so renderFrame doesn't need cols/rows: chooseLayout only
+// ever returns a Layout whose canonical rendered size already fits whatever
+// terminal it was computed against).
+const SIDE_TEXT_WIDTH = 26
+
+export function renderFrame(s: BomberState, you: number, layout: Layout, claude: string): string {
+  const { r, sideHud, glyph } = layout
+  const occ = buildOccupancy(s)
+  const arenaLines = glyph ? glyphArena(s, occ) : spriteArena(s, occ, r)
+  const boardCols = glyph ? GRID_W * 2 : GRID_W * 2 * r
+
+  const clock = fmtClock(s.tick)
+  const shrink = shrinkStatus(s.tick)
+  const names = s.players.map((p) => playerLine(p, p.id === you))
+
+  const lines: string[] = []
+
+  if (sideHud) {
+    const hudRows = [clock, shrink, ...names]
+    for (let i = 0; i < arenaLines.length; i++) {
+      let line = arenaLines[i]!
+      const text = hudRows[i]
+      if (text) line += ' ' + text.slice(0, SIDE_TEXT_WIDTH)
+      lines.push(line)
+    }
+  } else {
+    lines.push(...arenaLines)
+    const belowText = `${clock}  ${shrink}  ${names.join('  ')}`
+    lines.push(belowText.slice(0, boardCols))
+  }
+
+  const statusWidth = boardCols + (sideHud ? SIDE_TEXT_WIDTH + 1 : 0)
+  lines.push(claude.slice(0, statusWidth))
+
+  // Per-line clear-to-EOL (ESC[K) kills resize residue to the right of every
+  // line (checkwait/chess-4 lesson); trailing ESC[J kills residue below —
+  // the renderer never scrolls, so both are always safe.
+  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + RESET + `${ESC}[J`
+}
