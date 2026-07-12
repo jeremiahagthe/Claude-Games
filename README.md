@@ -110,11 +110,13 @@ the same Cloudflare Worker deployment).
 
 ## boomwait — terminal bomber
 
-**Game 3: boomwait** — 4-player last-man-standing bomberman on a 13×11 grid,
-the same 3–6 minute session shape as a fragwait or checkwait match. Online
-PvP via matchmaking by default — the lobby gathers players for ~10s and bots
-always backfill any empty slots, so a match is never short of four players.
-Offline play drops you straight into a match against 3 bots instead.
+**Game 3: boomwait** — 4-player last-man-standing bomberman on a 13×11 grid.
+Matches run ~2–3 minutes: a sudden-death shrink starts closing the arena in
+from 90s and guarantees an end by just over 3 minutes, so a game always fits
+inside a Claude turn. Online PvP via matchmaking by default — the lobby
+gathers players for ~10s and bots always backfill any empty slots, so a
+match is never short of four players. Offline play drops you straight into
+a match against 3 bots instead.
 
 ### Standalone play
 
