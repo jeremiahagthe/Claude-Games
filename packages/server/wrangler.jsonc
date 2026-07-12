@@ -7,11 +7,14 @@
       { "name": "MATCH", "class_name": "MatchDO" },
       { "name": "LOBBY", "class_name": "LobbyDO" },
       { "name": "CHESS_LOBBY", "class_name": "ChessLobbyDO" },
-      { "name": "CHESS_MATCH", "class_name": "ChessMatchDO" }
+      { "name": "CHESS_MATCH", "class_name": "ChessMatchDO" },
+      { "name": "BOMBER_LOBBY", "class_name": "BomberLobbyDO" },
+      { "name": "BOMBER_MATCH", "class_name": "BomberMatchDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["MatchDO", "LobbyDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["ChessLobbyDO", "ChessMatchDO"] }
+    { "tag": "v2", "new_sqlite_classes": ["ChessLobbyDO", "ChessMatchDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["BomberLobbyDO", "BomberMatchDO"] }
   ]
 }
