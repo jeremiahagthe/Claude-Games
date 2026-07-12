@@ -1,10 +1,15 @@
+import { hostname } from 'node:os'
+import { sanitizeHandle } from 'boomwait-core'
 import type { CliOpts } from './cliArgs.js'
+import { runOffline } from './offline.js'
 
-// Placeholder entry point (Task 9 scope: scaffold + renderer only). The
-// interactive game loop is Task 10 and online matchmaking is Task 11 — main
-// just wires cliArgs through for now so bin/boomwait.js -> dist/cli.js has a
-// real module to import, mirroring checkwait's scaffold shape.
+// Task 10 scope: the offline loop (vs 3 synchronous bots) is real. Online
+// matchmaking is Task 11 — TODO(task-11): once the server/lobby lands, route
+// the (opts.offline === false) branch through runOnline instead; for now
+// every invocation (with or without --offline) plays offline so the CLI is
+// usable today.
 export async function main(opts: CliOpts): Promise<void> {
-  void opts
-  throw new Error('boomwait: game loop not implemented yet (see Task 10)')
+  const name = sanitizeHandle(opts.name ?? hostname())
+  const seed = Date.now() >>> 0
+  await runOffline({ difficulty: opts.difficulty, name, seed })
 }
