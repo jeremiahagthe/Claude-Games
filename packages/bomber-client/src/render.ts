@@ -258,6 +258,30 @@ function playerLine(p: PlayerState, isYou: boolean): string {
 // terminal it was computed against).
 const SIDE_TEXT_WIDTH = 26
 
+// Spec HUD row: color swatch, name, alive/dead, bomb/range/speed counts. The
+// swatch carries a color escape, so it is built and width-budgeted here
+// (never handed to renderFrame's generic `text.slice(0, SIDE_TEXT_WIDTH)`,
+// which operates on raw chars and would slice straight through an escape
+// sequence, corrupting the terminal for every line after it) — 1 visible col
+// for the swatch, the rest of the budget for the plain-text remainder.
+function playerHudRow(p: PlayerState, isYou: boolean, mode: ColorMode): string {
+  const swatch =
+    mode === 'truecolor'
+      ? fg(TEAM_RGB[p.id]!) + '■' + RESET
+      : mode === '256'
+        ? `${ESC}[${TEAM_BASIC[p.id]!}m■${RESET}`
+        : '#'
+  const mark = isYou ? '▸' : ' '
+  const dead = p.alive ? ' †' : ''
+  const stats = p.alive ? ` b${p.bombCap}r${p.range}s${p.speed}` : ''
+  const plain = `${mark}${p.name}${dead}${stats}`
+  return swatch + plain.slice(0, SIDE_TEXT_WIDTH - 1)
+}
+
+// Two lines so each stays within SIDE_TEXT_WIDTH (26 cols) — matches the
+// README's boomwait-controls table wording.
+const KEY_HINT_ROWS: readonly string[] = ['wasd/arrows move', 'space bomb, q-q quit']
+
 export function renderFrame(s: BomberState, you: number, layout: Layout, claude: string, mode: ColorMode = 'truecolor'): string {
   const { r, sideHud, glyph } = layout
   const occ = buildOccupancy(s)
@@ -271,11 +295,26 @@ export function renderFrame(s: BomberState, you: number, layout: Layout, claude:
   const lines: string[] = []
 
   if (sideHud) {
-    const hudRows = [clock, shrink, ...names]
+    // Per spec: player rows (color swatch, name, alive/dead, bomb/range/speed
+    // counts), round timer, shrink warning, Claude status (appended by the
+    // caller as `claude` below — already present), key hints. Player rows
+    // carry their own pre-budgeted color escape (see playerHudRow) and are
+    // appended verbatim; every other row here is plain text and goes through
+    // the same generic width slice as before.
+    const plainRows = [clock, shrink]
+    const playerRows = s.players.map((p) => playerHudRow(p, p.id === you, mode))
+    const hintRows = KEY_HINT_ROWS
     for (let i = 0; i < arenaLines.length; i++) {
       let line = arenaLines[i]!
-      const text = hudRows[i]
-      if (text) line += ' ' + text.slice(0, SIDE_TEXT_WIDTH)
+      if (i < plainRows.length) {
+        const text = plainRows[i]
+        if (text) line += ' ' + text.slice(0, SIDE_TEXT_WIDTH)
+      } else if (i < plainRows.length + playerRows.length) {
+        line += ' ' + playerRows[i - plainRows.length]!
+      } else if (i < plainRows.length + playerRows.length + hintRows.length) {
+        const text = hintRows[i - plainRows.length - playerRows.length]
+        if (text) line += ' ' + text.slice(0, SIDE_TEXT_WIDTH)
+      }
       lines.push(line)
     }
   } else {

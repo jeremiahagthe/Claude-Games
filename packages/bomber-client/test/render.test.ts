@@ -68,3 +68,46 @@ describe('glyph mode honors the terminal color mode', () => {
     expect(withDefault).toBe(explicit)
   })
 })
+
+// Final review Fix 3 (spec compliance): the side HUD's ~16 unused rows at
+// r=2 must actually carry the spec's full content — per-player bomb/range/
+// speed counts and key hints — not just names/clock/shrink, while the
+// pinned 80x24-gate block above stays byte-identical and green (same frame-
+// fit rule: side HUD width is structurally sliced to SIDE_TEXT_WIDTH).
+describe('side HUD spec content (Fix 3)', () => {
+  it('shows bomb/range/speed stat counts for all four players', () => {
+    const s = createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+    const flat = strip(renderFrame(s, 0, { r: 2, sideHud: true, glyph: false }, ''))
+    for (const p of s.players) {
+      expect(flat).toContain(`b${p.bombCap}r${p.range}s${p.speed}`)
+    }
+  })
+
+  it('shows at least one key hint (move/bomb/quit controls)', () => {
+    const s = createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+    const flat = strip(renderFrame(s, 0, { r: 2, sideHud: true, glyph: false }, ''))
+    expect(flat).toMatch(/wasd/i)
+    expect(flat).toMatch(/bomb/i)
+    expect(flat).toMatch(/quit/i)
+  })
+
+  it('the fuller HUD still fits: ≤24 lines, every line ≤80 visible cols', () => {
+    const s = createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+    const lines = renderFrame(s, 0, { r: 2, sideHud: true, glyph: false }, 'Claude working…').split('\n')
+    expect(lines.length).toBeLessThanOrEqual(24)
+    for (const l of lines) expect(strip(l).length).toBeLessThanOrEqual(80)
+  })
+
+  it('a colored swatch does not corrupt the frame: every opened SGR escape on a HUD line is balanced by a reset', () => {
+    const s = createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+    const out = renderFrame(s, 0, { r: 2, sideHud: true, glyph: false }, '')
+    // Guards against slicing straight through an escape sequence (which would leave a
+    // truncated/unbalanced code and bleed color into the next line) — every line that opens
+    // a swatch color must also close it before the line ends (ESC[K).
+    for (const line of out.split('\x1b[K\r\n')) {
+      const opens = (line.match(/\x1b\[(?:38|48);2;\d+;\d+;\d+m|\x1b\[9\dm/g) ?? []).length
+      const resets = (line.match(/\x1b\[0m/g) ?? []).length
+      if (opens > 0) expect(resets).toBeGreaterThanOrEqual(1)
+    }
+  })
+})

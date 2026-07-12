@@ -168,6 +168,24 @@ describe('BomberMatchHost', () => {
     expect(snap.state.players[0]![9]).toBe(0) // cleared
   })
 
+  it('a queued bomb is not dropped when a dir-change InputMsg lands in the same tick (unsynchronized 50ms client/server clocks can coalesce two client ticks into one server tick)', () => {
+    const host = new BomberMatchHost(4)
+    const conns = [conn(), conn(), conn(), conn()]
+    const names = ['a', 'b', 'c', 'd']
+    conns.forEach((c, i) => host.join(c, names[i]!))
+
+    // "bomb then run": first InputMsg queues the bomb (dir kept), second InputMsg (same tick,
+    // before the server has consumed the latch) changes direction and does NOT re-request the
+    // bomb -- the pending one-shot must survive the overwrite and still be placed this tick.
+    host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'keep', bomb: true }))
+    host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
+    host.tick()
+    const snap = lastMsg(conns[0]!)
+    if (snap.t !== 'snap') throw new Error('expected snap')
+    expect(snap.state.bombs).toHaveLength(1) // the queued bomb was placed, not silently dropped
+    expect(snap.state.bombs[0]![0]).toBe(0) // owner: player 0's bomb, not lost to the dir-change overwrite
+  })
+
   it('inputs before match start are rejected without crashing (no host yet)', () => {
     const host = new BomberMatchHost(2)
     const c = conn()

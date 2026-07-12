@@ -6,7 +6,7 @@
 // Reuses game.ts's session glue (setupGame/teardownAndExit) exactly like offline.ts; the only
 // thing genuinely different between the two loops is how a tick's Input becomes state: a
 // synchronous local step() there, a minimal-diff InputMsg to the server here.
-import type { Dir, Result } from 'boomwait-core'
+import type { BomberState, Dir, Result } from 'boomwait-core'
 import { createMatch, fromWire, MAX_PLAYERS, sanitizeHandle } from 'boomwait-core'
 import { hostname } from 'node:os'
 import { renderFrame } from './render.js'
@@ -27,6 +27,18 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
 
   let ended: Result | null = null
   let closedEarly = false // ws closed after start with no `end` ever arriving (dropped/kicked)
+
+  // Hoisted above the connect() call and seeded null: onSnap below closes over `state`, and a
+  // coalesced ws chunk can deliver `start` and the first `snap` in ONE macrotask, back to back
+  // — the 'start' message resolves connect()'s internal promise, but that resolution's
+  // continuation (back in this function, past the `await`) only runs on the NEXT microtask
+  // turn, so a `snap` arriving synchronously right after it is still handled by onSnap while
+  // this function is suspended mid-`await`. A `let state = ...` declared AFTER the `await`
+  // leaves `state` in the temporal dead zone for that window — accessing it throws a bare
+  // ReferenceError from inside a raw event-loop callback (an uncaught exception, since exit
+  // guards aren't installed yet), not a rejected promise this function's own try/catch can
+  // see. Declaring it here means onSnap always has a variable to assign into.
+  let state: BomberState | null = null
 
   let connected: Awaited<ReturnType<typeof BomberNetClient.connect>>
   try {
@@ -49,14 +61,18 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   const you = start.you
   // Seeds the local mirror deterministically from the SAME inputs the server used to create
   // its own tick-0 state — this is what's on screen for the handful of ticks before the
-  // first `snap` arrives; every `snap` after that overwrites it outright.
-  let state = createMatch(start.seed, start.names, start.bots)
+  // first `snap` arrives; every `snap` after that overwrites it outright. Also the point past
+  // which `state` is guaranteed non-null: any pre-seed `snap` (the race above) already landed
+  // in the `state` variable via onSnap, and this unconditionally overwrites it with the
+  // server's own tick-0 board either way — same precedence a `snap` always has over the local
+  // mirror.
+  state = createMatch(start.seed, start.names, start.bots)
 
   const session = await setupGame()
   let lastSentDir: Dir | null = null
 
   const redraw = (): void => {
-    session.term.write(renderFrame(state, you, session.layout(), session.statusLine(), session.colorMode))
+    session.term.write(renderFrame(state!, you, session.layout(), session.statusLine(), session.colorMode))
   }
   session.onResize(redraw)
 
@@ -75,7 +91,7 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
         lastSentDir = nextDir
       }
       redraw()
-      if (session.quitRequested() || ended !== null || closedEarly || state.result) {
+      if (session.quitRequested() || ended !== null || closedEarly || state!.result) {
         clearInterval(timer)
         resolve()
       }
@@ -95,9 +111,9 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   // finale at all (matches offline.ts's mid-match-quit behavior), so it's excluded first.
   const finalResult: Result | null = session.quitRequested()
     ? null
-    : (ended ?? state.result ?? (closedEarly ? { kind: 'win', winner: (you + 1) % MAX_PLAYERS } : null))
+    : (ended ?? state!.result ?? (closedEarly ? { kind: 'win', winner: (you + 1) % MAX_PLAYERS } : null))
 
-  if (finalResult) state = { ...state, result: finalResult }
+  if (finalResult) state = { ...state!, result: finalResult }
 
   return teardownAndExit({
     term: session.term,
@@ -107,13 +123,13 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
     finale: finalResult
       ? {
           screen: renderFrame(
-            state,
+            state!,
             you,
             session.layout(),
             `${resultLine(finalResult, you)} — press any key`,
             session.colorMode,
           ),
-          shareText: shareCard(finalResult, you, state.tick, start.names.filter((_, i) => i !== you).join(', ')),
+          shareText: shareCard(finalResult, you, state!.tick, start.names.filter((_, i) => i !== you).join(', ')),
         }
       : null,
   })

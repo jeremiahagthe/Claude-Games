@@ -106,7 +106,10 @@ function busyState(): BomberState {
     bombCap: 5,
     range: 7,
     speed: 3,
-    dir: (['up', 'down', 'left', 'right'] as const)[id % 4] ?? null,
+    // id 3 pins dir to null (standing) -- every other slot was already exercising a real
+    // heading, leaving dirToCode(null) <-> codeToDir(0) round-tripped by nothing (id % 4 for
+    // 4 players never lands past index 3, so the `?? null` fallback above was dead).
+    dir: id === 3 ? null : (['up', 'down', 'left', 'right'] as const)[id % 4]!,
     stepCooldown: 4,
     activeBombs: 3,
   }))

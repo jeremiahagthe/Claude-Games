@@ -155,7 +155,12 @@ export class BomberMatchHost {
     if (!msg || msg.t !== 'input') return // garbage, oversized, or a stray 'hello': ignore
     const cur = this.latches.get(slot) ?? { dir: null, bomb: false }
     const dir = msg.dir === 'keep' ? cur.dir : msg.dir
-    this.latches.set(slot, { dir, bomb: msg.bomb })
+    // bomb is a one-shot latch, not a held state like dir: a still-pending bomb from an
+    // earlier InputMsg this same server tick must survive a later message that doesn't
+    // itself re-request one, or unsynchronized 50ms client/server clocks (two client ticks
+    // coalescing into one server tick) silently drop a queued "bomb then run". tick() clears
+    // it back to false the instant it's consumed, so `cur.bomb` is never stale across ticks.
+    this.latches.set(slot, { dir, bomb: cur.bomb || msg.bomb })
   }
 
   /** Invoked by BomberMatchDO.alarm() at 20Hz once the match has started. */
