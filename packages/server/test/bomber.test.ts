@@ -93,7 +93,7 @@ describe('BomberMatchHost', () => {
     conns.forEach((c, i) => {
       const j = host.join(c, names[i]!)
       expect(j).not.toBeNull()
-      expect(j?.playerId).toBe(i)
+      expect(j?.connId).toBe(i)
     })
     expect(conns[3]!.sent).toHaveLength(1) // start fires the instant the 4th joins
     const start = lastMsg(conns[0]!)
@@ -109,7 +109,7 @@ describe('BomberMatchHost', () => {
     const host = new BomberMatchHost(1)
     const c = conn()
     const j = host.join(c, 'solo')
-    expect(j).toEqual({ playerId: 0, started: true })
+    expect(j).toEqual({ connId: 0, started: true })
     const start = lastMsg(c)
     if (start.t !== 'start') throw new Error('expected start')
     expect(start.you).toBe(0)
@@ -265,6 +265,73 @@ describe('BomberMatchHost', () => {
     expect(c1.sent).toHaveLength(1)
     expect(host.forceStart()).toBe('started') // idempotent: already started
     expect(c1.sent).toHaveLength(1) // no duplicate StartMsg
+  })
+
+  // --- pre-start churn: final player slots are assigned at START, not at hello ------------
+  // Ids handed out at hello time are unstable under pre-start disconnects: with slot = "join
+  // order at hello", A(0) B(1) then A leaving pre-start leaves a gap at 0, and a force-start
+  // that counts conns would map connected-human B onto a bot slot (their inputs ignored all
+  // match). Clients only ever learn their slot from StartMsg.you, so assigning final slots at
+  // start() by compacting the surviving connections in join order is free -- and it also
+  // keeps each surviving human paired with their OWN name.
+
+  it('hello A, hello B, A leaves pre-start, deadline fires → B gets a human slot with their own name and their inputs drive it', () => {
+    const host = new BomberMatchHost(3)
+    const cA = conn()
+    const cB = conn()
+    const jA = host.join(cA, 'aye')!
+    const jB = host.join(cB, 'bee')!
+    host.leave(jA.connId) // A vanishes before the match starts
+    expect(host.forceStart()).toBe('started')
+
+    const startB = lastMsg(cB)
+    if (startB.t !== 'start') throw new Error('expected start')
+    expect(startB.you).toBe(0) // compacted: B is the only human left
+    expect(startB.bots).toEqual([false, true, true, true]) // B's slot is a HUMAN slot (no bot mind)
+    expect(startB.names[0]).toBe('bee') // B's own name, not A's stale one
+    expect(cA.sent).toHaveLength(0) // the departed socket got nothing
+
+    // B's InputMsg must actually drive slot 0's latch in tick() -- a bot mind on that slot
+    // would override it. Slot 0 spawns at (1,1); (2,1) is a spawn-pocket tile, always clear.
+    host.handleMessage(jB.connId, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
+    expect(host.tick().type).toBe('running')
+    const snap = lastMsg(cB)
+    if (snap.t !== 'snap') throw new Error('expected snap')
+    expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // moved right
+    expect(snap.state.players[0]![9]).toBe(4) // dirCode 'right': B's latch, not a bot decision
+  })
+
+  it('hello A, hello B, A leaves, C hellos → no id collision; both live humans control distinct human slots', () => {
+    const host = new BomberMatchHost(3)
+    const cA = conn()
+    const cB = conn()
+    const cC = conn()
+    const jA = host.join(cA, 'aye')!
+    const jB = host.join(cB, 'bee')!
+    host.leave(jA.connId)
+    const jC = host.join(cC, 'cee')!
+    expect(jC.connId).not.toBe(jB.connId) // monotonic keys: C must not collide with B
+    expect(host.hasStarted()).toBe(false) // 2 of 3 connected: still gathering
+
+    expect(host.forceStart()).toBe('started')
+    const startB = lastMsg(cB)
+    const startC = lastMsg(cC)
+    if (startB.t !== 'start' || startC.t !== 'start') throw new Error('expected start')
+    expect(startB.you).toBe(0) // join order preserved: B before C
+    expect(startC.you).toBe(1)
+    expect(startB.bots).toEqual([false, false, true, true])
+    expect(startB.names.slice(0, 2)).toEqual(['bee', 'cee'])
+    expect(cA.sent).toHaveLength(0)
+
+    // Each human's input routes to their OWN slot. Slot 1 spawns at (11,1); (10,1) is a
+    // spawn-pocket tile, always clear, so C stepping left is deterministic too.
+    host.handleMessage(jB.connId, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
+    host.handleMessage(jC.connId, JSON.stringify({ t: 'input', dir: 'left', bomb: false }))
+    expect(host.tick().type).toBe('running')
+    const snap = lastMsg(cC)
+    if (snap.t !== 'snap') throw new Error('expected snap')
+    expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // B moved right
+    expect([snap.state.players[1]![3], snap.state.players[1]![4]]).toEqual([10, 1]) // C moved left
   })
 
   // --- result → EndMsg → ended -----------------------------------------------------------

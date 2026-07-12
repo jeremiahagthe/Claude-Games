@@ -69,7 +69,10 @@ interface Latch {
 }
 
 export interface JoinResult {
-  playerId: number
+  // Host-scoped routing handle for this socket -- NOT the player slot. Final slots are
+  // assigned at start() (see BomberMatchHost.start), because ids handed out at hello time
+  // are unstable under pre-start disconnects; the client learns its slot from StartMsg.you.
+  connId: number
   started: boolean
 }
 
@@ -85,11 +88,19 @@ export type TickAction = { type: 'running' } | { type: 'ended' } | { type: 'empt
  */
 export class BomberMatchHost {
   readonly humanCount: number
-  private conns = new Map<number, BomberConn>()
-  private humanNames: string[] = []
-  private latches = new Map<number, Latch>()
-  private minds = new Map<number, BotMind>()
-  private disconnected = new Map<number, number>() // playerId -> disconnectedAt, pending grace
+  // Pre-start bookkeeping is keyed by a MONOTONIC connId, never by "join order so far":
+  // a hello-then-disconnect before start would leave a gap that a naive conns.size id both
+  // collides into (next joiner reuses a live player's id) and miscounts at force-start
+  // (a connected human lands on a bot slot, their inputs ignored all match). Final player
+  // slots 0..k-1 are assigned once, in start(), by compacting the SURVIVING connections in
+  // join order -- clients only learn their slot from StartMsg.you, so this is free.
+  private nextConnId = 0
+  private conns = new Map<number, BomberConn>() // connId -> conn; insertion order = join order
+  private names = new Map<number, string>() // connId -> handle
+  private slots = new Map<number, number>() // connId -> final player slot, assigned at start()
+  private latches = new Map<number, Latch>() // player slot -> input latch
+  private minds = new Map<number, BotMind>() // player slot -> bot mind
+  private disconnected = new Map<number, number>() // player slot -> disconnectedAt, pending grace
   private state: BomberState | null = null
   private started = false
   private ended = false
@@ -100,12 +111,11 @@ export class BomberMatchHost {
 
   join(conn: BomberConn, name: string): JoinResult | null {
     if (this.started || this.conns.size >= this.humanCount) return null
-    const playerId = this.conns.size
-    this.conns.set(playerId, conn)
-    this.humanNames.push(name)
-    this.latches.set(playerId, { dir: null, bomb: false })
+    const connId = this.nextConnId++
+    this.conns.set(connId, conn)
+    this.names.set(connId, name)
     if (this.conns.size === this.humanCount) this.start()
-    return { playerId, started: this.started }
+    return { connId, started: this.started }
   }
 
   hasStarted(): boolean {
@@ -127,21 +137,25 @@ export class BomberMatchHost {
 
   // A socket closing does not eliminate the player outright -- it starts a GRACE_MS window
   // (checked at the top of every tick()); this only removes the ATTACHED socket so broadcasts
-  // and the "room empty" check reflect who's actually listening.
-  leave(playerId: number): void {
-    if (!this.conns.has(playerId)) return
-    this.conns.delete(playerId)
+  // and the "room empty" check reflect who's actually listening. Pre-start it simply forgets
+  // the connection: the departed human never gets a slot (see start()'s compaction).
+  leave(connId: number): void {
+    if (!this.conns.delete(connId)) return
+    this.names.delete(connId)
     if (!this.started || this.ended) return
-    this.disconnected.set(playerId, Date.now())
+    const slot = this.slots.get(connId)
+    if (slot !== undefined) this.disconnected.set(slot, Date.now())
   }
 
-  handleMessage(playerId: number, raw: string): void {
+  handleMessage(connId: number, raw: string): void {
     if (this.ended || !this.started) return // reject inputs before match start; nothing to crash
+    const slot = this.slots.get(connId)
+    if (slot === undefined) return // unknown connection: nothing to latch
     const msg = parseBomberClientMsg(raw)
     if (!msg || msg.t !== 'input') return // garbage, oversized, or a stray 'hello': ignore
-    const cur = this.latches.get(playerId) ?? { dir: null, bomb: false }
+    const cur = this.latches.get(slot) ?? { dir: null, bomb: false }
     const dir = msg.dir === 'keep' ? cur.dir : msg.dir
-    this.latches.set(playerId, { dir, bomb: msg.bomb })
+    this.latches.set(slot, { dir, bomb: msg.bomb })
   }
 
   /** Invoked by BomberMatchDO.alarm() at 20Hz once the match has started. */
@@ -199,28 +213,31 @@ export class BomberMatchHost {
 
   private start(): void {
     this.started = true
+    const seed = Math.floor(Math.random() * 2 ** 31)
+    // Final slot assignment: compact the SURVIVING connections (pre-start leavers are
+    // already gone from `conns`) into slots 0..k-1 in join order, each with their own name.
     // Human slots = who actually connected, not the lobby's promise: identical at a natural
     // start (conns.size === humanCount), smaller after a forceStart() with no-shows.
-    const humans = this.conns.size
-    const seed = Math.floor(Math.random() * 2 ** 31)
     const names: string[] = []
     const bots: boolean[] = []
-    for (let i = 0; i < MAX_PLAYERS; i++) {
-      if (i < humans) {
-        names.push(this.humanNames[i] ?? `p${i}`)
-        bots.push(false)
-      } else {
-        // Online backfill bots are placeholders for humans, not the opposition (mirrors
-        // fragwait's match-host.ts BOT_SKILLS reasoning): 'easy' cadence in tick().
-        names.push(`synth-${i}`)
-        bots.push(true)
-        this.minds.set(i, createBotMind(Math.floor(Math.random() * 2 ** 31)))
-      }
+    for (const connId of this.conns.keys()) {
+      const slot = names.length
+      this.slots.set(connId, slot)
+      this.latches.set(slot, { dir: null, bomb: false })
+      names.push(this.names.get(connId) ?? `p${slot}`)
+      bots.push(false)
+    }
+    for (let i = names.length; i < MAX_PLAYERS; i++) {
+      // Online backfill bots are placeholders for humans, not the opposition (mirrors
+      // fragwait's match-host.ts BOT_SKILLS reasoning): 'easy' cadence in tick().
+      names.push(`synth-${i}`)
+      bots.push(true)
+      this.minds.set(i, createBotMind(Math.floor(Math.random() * 2 ** 31)))
     }
     this.state = createMatch(seed, names, bots)
     const startTick = this.state.tick
-    for (const [playerId, conn] of this.conns) {
-      this.send(conn, { t: 'start', you: playerId, seed, names, bots, startTick })
+    for (const [connId, conn] of this.conns) {
+      this.send(conn, { t: 'start', you: this.slots.get(connId)!, seed, names, bots, startTick })
     }
   }
 
@@ -292,8 +309,8 @@ export class BomberMatchDO implements DurableObject {
         server.close(1013, 'full')
         return
       }
-      this.ids.set(server, joined.playerId)
-      this.sockets.set(joined.playerId, server)
+      this.ids.set(server, joined.connId)
+      this.sockets.set(joined.connId, server)
       if (joined.started) void this.state.storage.setAlarm(Date.now() + TICK_MS)
     })
     server.addEventListener('close', () => {
