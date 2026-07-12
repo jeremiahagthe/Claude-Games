@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { MAX_PLAYERS, parseBomberServerMsg, type BomberServerMsg } from 'boomwait-core'
+import { createMatch, MAX_PLAYERS, parseBomberServerMsg, type BomberServerMsg, type BomberState } from 'boomwait-core'
 import { BomberLobbyQueue, type LobbyOutcome } from '../src/bomber-lobby.js'
 import { BomberMatchDO, BomberMatchHost, parseBomberMatchId, type BomberConn } from '../src/bomber-match.js'
 
@@ -221,6 +221,83 @@ describe('BomberMatchHost', () => {
     expect(() => host.handleMessage(99, JSON.stringify({ t: 'input', dir: 'up', bomb: false }))).not.toThrow() // unknown player id
     expect(host.tick().type).toBe('running') // host is still healthy afterward
   })
+
+  // --- start deadline (socket no-show) ---------------------------------------------------
+  // The lobby promised humanCount humans, but getting {matchId, token} from POST /bomber/join
+  // and actually opening the ws are separate steps -- a client can vanish in between (Ctrl-C).
+  // Without a deadline, the players who DID connect wait forever: start() only fires at
+  // conns.size === humanCount, and no alarm runs pre-start.
+
+  it('start deadline: 2 of 3 promised humans connected → force-start with 2 humans + 2 bots', () => {
+    const host = new BomberMatchHost(3)
+    const c1 = conn()
+    const c2 = conn()
+    host.join(c1, 'one')
+    host.join(c2, 'two')
+    expect(host.hasStarted()).toBe(false)
+    expect(c1.sent).toHaveLength(0) // still gathering: no start yet
+    expect(host.forceStart()).toBe('started')
+    expect(host.hasStarted()).toBe(true)
+    const s1 = lastMsg(c1)
+    if (s1.t !== 'start') throw new Error('expected start')
+    expect(s1.bots).toEqual([false, false, true, true]) // the no-show became a bot
+    expect(s1.names.slice(0, 2)).toEqual(['one', 'two'])
+    const s2 = lastMsg(c2)
+    if (s2.t !== 'start') throw new Error('expected start')
+    expect(s2.you).toBe(1)
+    expect(host.join(conn(), 'late')).toBeNull() // the no-show finally arriving is rejected
+    expect(host.tick().type).toBe('running') // tick loop runs normally after a force-start
+  })
+
+  it('start deadline with zero connected sockets → empty (room is tombstoned, no start ever sent)', () => {
+    const host = new BomberMatchHost(2)
+    expect(host.forceStart()).toBe('empty')
+    expect(host.hasStarted()).toBe(false)
+  })
+
+  it('all promised humans connect before the deadline → starts immediately; a late deadline fire is a no-op', () => {
+    const host = new BomberMatchHost(2)
+    const c1 = conn()
+    const c2 = conn()
+    host.join(c1, 'a')
+    host.join(c2, 'b')
+    expect(host.hasStarted()).toBe(true)
+    expect(c1.sent).toHaveLength(1)
+    expect(host.forceStart()).toBe('started') // idempotent: already started
+    expect(c1.sent).toHaveLength(1) // no duplicate StartMsg
+  })
+
+  // --- result → EndMsg → ended -----------------------------------------------------------
+
+  it('when step() stamps a result: final snap (result included) + EndMsg broadcast, tick returns ended, host inert after', () => {
+    const host = new BomberMatchHost(4)
+    const conns = [conn(), conn(), conn(), conn()]
+    const names = ['a', 'b', 'c', 'd']
+    conns.forEach((c, i) => host.join(c, names[i]!)) // 4 humans: zero bot minds, fully deterministic
+    // Hand-craft a near-end state via the core's public createMatch: players 1-3 already dead,
+    // so the very next step() sees one survivor and stamps {kind:'win', winner:0}.
+    const base = createMatch(5, names, [false, false, false, false])
+    const nearEnd: BomberState = { ...base, players: base.players.map((p) => (p.id === 0 ? p : { ...p, alive: false })) }
+    ;(host as unknown as { state: BomberState }).state = nearEnd
+
+    const sentBefore = conns[1]!.sent.length
+    expect(host.tick()).toEqual({ type: 'ended' })
+    // Every conn got exactly two messages: the final board snap, then the formal end notice.
+    for (const c of conns) {
+      expect(c.sent.length).toBe(sentBefore + 2)
+      const snap = parseBomberServerMsg(c.sent.at(-2)!)
+      if (snap?.t !== 'snap') throw new Error('expected final snap')
+      expect(snap.state.result).toEqual([0, 0]) // wire form of {kind:'win', winner:0}
+      const end = parseBomberServerMsg(c.sent.at(-1)!)
+      if (end?.t !== 'end') throw new Error('expected end')
+      expect(end.result).toEqual({ kind: 'win', winner: 0 })
+    }
+    // Post-end the host is inert: no more broadcasts, no crashes.
+    expect(() => host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'up', bomb: false }))).not.toThrow()
+    expect(() => host.leave(0)).not.toThrow()
+    expect(host.tick()).toEqual({ type: 'empty' })
+    expect(conns[0]!.sent.length).toBe(sentBefore + 2) // nothing sent after the end pair
+  })
 })
 
 // Minimal fake of the ambient (types-only) Workers WebSocketPair/WebSocket/DurableObjectState
@@ -255,34 +332,52 @@ function fakeRequest(url: string): Request {
   } as unknown as Request
 }
 
-function fakeDoState(): DurableObjectState {
-  return { storage: { setAlarm: async () => {}, deleteAlarm: async () => {} } } as unknown as DurableObjectState
+function fakeDoState(): { state: DurableObjectState; calls: { setAlarm: number; deleteAlarm: number } } {
+  const calls = { setAlarm: 0, deleteAlarm: 0 }
+  const state = {
+    storage: {
+      setAlarm: async () => {
+        calls.setAlarm++
+      },
+      deleteAlarm: async () => {
+        calls.deleteAlarm++
+      },
+    },
+  } as unknown as DurableObjectState
+  return { state, calls }
+}
+
+function stubWorkersGlobals(pairs: FakeSocket[][]): void {
+  vi.stubGlobal(
+    'WebSocketPair',
+    class {
+      constructor() {
+        const pair = [new FakeSocket(), new FakeSocket()]
+        pairs.push(pair)
+        return pair as unknown as [FakeSocket, FakeSocket]
+      }
+    },
+  )
+  // Real Workers Response supports status 101 + a `webSocket` option; Node's built-in
+  // Response rejects 101 outright. Stub it so these tests can exercise fetch()'s return
+  // value without tripping over an unrelated environment gap (same as chess.test.ts).
+  vi.stubGlobal(
+    'Response',
+    class {
+      constructor(
+        public body: unknown,
+        public init: unknown,
+      ) {}
+    },
+  )
 }
 
 describe('BomberMatchDO', () => {
   it('an empty room (last human disconnects mid-match) tombstones on the next alarm; later close/message races do not throw', async () => {
     const pairs: FakeSocket[][] = []
-    vi.stubGlobal(
-      'WebSocketPair',
-      class {
-        constructor() {
-          const pair = [new FakeSocket(), new FakeSocket()]
-          pairs.push(pair)
-          return pair as unknown as [FakeSocket, FakeSocket]
-        }
-      },
-    )
-    vi.stubGlobal(
-      'Response',
-      class {
-        constructor(
-          public body: unknown,
-          public init: unknown,
-        ) {}
-      },
-    )
+    stubWorkersGlobals(pairs)
     try {
-      const doInstance = new BomberMatchDO(fakeDoState())
+      const doInstance = new BomberMatchDO(fakeDoState().state)
       await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=1`))
       const sock = pairs[0]![1]!
       sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) })
@@ -303,30 +398,122 @@ describe('BomberMatchDO', () => {
 
   it('rejects a malformed token without crashing (closes instead of upgrading into a broken room)', async () => {
     const pairs: FakeSocket[][] = []
-    vi.stubGlobal(
-      'WebSocketPair',
-      class {
-        constructor() {
-          const pair = [new FakeSocket(), new FakeSocket()]
-          pairs.push(pair)
-          return pair as unknown as [FakeSocket, FakeSocket]
-        }
-      },
-    )
-    vi.stubGlobal(
-      'Response',
-      class {
-        constructor(
-          public body: unknown,
-          public init: unknown,
-        ) {}
-      },
-    )
+    stubWorkersGlobals(pairs)
     try {
-      const doInstance = new BomberMatchDO(fakeDoState())
+      const doInstance = new BomberMatchDO(fakeDoState().state)
       await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=nope`))
       const sock = pairs[0]![1]!
       expect(sock.closedWith?.code).toBe(1002)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('arms the start deadline at host creation; when it fires with 2 of 3 humans helloed, the match force-starts and ticks', async () => {
+    const pairs: FakeSocket[][] = []
+    stubWorkersGlobals(pairs)
+    try {
+      const { state, calls } = fakeDoState()
+      const doInstance = new BomberMatchDO(state)
+      await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=3`))
+      expect(calls.setAlarm).toBe(1) // deadline armed the moment the room (host) exists
+      await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=3`))
+      expect(calls.setAlarm).toBe(1) // not re-armed per socket (that would extend the deadline)
+      const s1 = pairs[0]![1]!
+      const s2 = pairs[1]![1]!
+      s1.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'one' }) })
+      s2.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'two' }) })
+      expect(s1.sent).toHaveLength(0) // 2 of 3: still gathering, no start
+
+      await doInstance.alarm() // the deadline fires pre-start
+      const start = parseBomberServerMsg(s1.sent.at(-1)!)
+      if (start?.t !== 'start') throw new Error('expected start')
+      expect(start.bots).toEqual([false, false, true, true]) // the no-show backfilled as a bot
+      expect(calls.setAlarm).toBe(2) // tick loop armed by the deadline handler
+
+      await doInstance.alarm() // now in the tick phase
+      const snap = parseBomberServerMsg(s2.sent.at(-1)!)
+      expect(snap?.t).toBe('snap')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('start deadline with zero helloed humans → tombstone, no start ever sent', async () => {
+    const pairs: FakeSocket[][] = []
+    stubWorkersGlobals(pairs)
+    try {
+      const { state, calls } = fakeDoState()
+      const doInstance = new BomberMatchDO(state)
+      await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=2`))
+      const sock = pairs[0]![1]! // socket upgraded but never sends hello
+
+      await doInstance.alarm() // deadline fires: zero humans connected
+      expect(calls.deleteAlarm).toBe(1) // alarms stopped: room is dead, not looping
+      expect(sock.sent).toHaveLength(0) // no start was ever broadcast
+      await expect(doInstance.alarm()).resolves.toBeUndefined() // tombstoned: no-op, no throw
+      expect(calls.setAlarm).toBe(1) // only ever the initial deadline; nothing re-armed
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('all humans connect before the deadline → starts immediately; the tick alarm replaces the deadline in the single alarm slot', async () => {
+    const pairs: FakeSocket[][] = []
+    stubWorkersGlobals(pairs)
+    try {
+      const { state, calls } = fakeDoState()
+      const doInstance = new BomberMatchDO(state)
+      await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=1`))
+      const sock = pairs[0]![1]!
+      expect(calls.setAlarm).toBe(1) // deadline armed
+      sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) })
+      expect(parseBomberServerMsg(sock.sent.at(-1)!)?.t).toBe('start') // started instantly
+      expect(calls.setAlarm).toBe(2) // tick alarm overwrote the pending deadline (one alarm slot)
+
+      await doInstance.alarm() // dispatches to the tick phase, not the deadline path
+      expect(parseBomberServerMsg(sock.sent.at(-1)!)?.t).toBe('snap')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('result → final snap + EndMsg, alarm deleted, sockets closed game over, tombstone; post-end events safe', async () => {
+    const pairs: FakeSocket[][] = []
+    stubWorkersGlobals(pairs)
+    try {
+      const { state, calls } = fakeDoState()
+      const doInstance = new BomberMatchDO(state)
+      await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=1`))
+      const sock = pairs[0]![1]!
+      sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) })
+      expect(parseBomberServerMsg(sock.sent.at(-1)!)?.t).toBe('start')
+
+      // Hand-craft a near-end state (players 1-3 dead) so the next tick's step() stamps the
+      // win deterministically -- botDecide returns inert inputs for dead players, so the
+      // random-seeded bot minds can't influence anything.
+      const host = (doInstance as unknown as { host: BomberMatchHost }).host
+      const base = createMatch(5, ['solo', 'x', 'y', 'z'], [false, true, true, true])
+      const nearEnd: BomberState = { ...base, players: base.players.map((p) => (p.id === 0 ? p : { ...p, alive: false })) }
+      ;(host as unknown as { state: BomberState }).state = nearEnd
+
+      await doInstance.alarm() // tick: result stamped -> ended -> tombstone
+      const snap = parseBomberServerMsg(sock.sent.at(-2)!)
+      if (snap?.t !== 'snap') throw new Error('expected final snap')
+      expect(snap.state.result).toEqual([0, 0]) // wire form of {kind:'win', winner:0}
+      const end = parseBomberServerMsg(sock.sent.at(-1)!)
+      if (end?.t !== 'end') throw new Error('expected end')
+      expect(end.result).toEqual({ kind: 'win', winner: 0 })
+      expect(calls.deleteAlarm).toBe(1) // alarms stopped
+      expect(sock.closedWith).toEqual({ code: 1000, reason: 'game over' })
+
+      const sentAfterEnd = sock.sent.length
+      expect(() =>
+        sock.dispatch('message', { data: JSON.stringify({ t: 'input', dir: 'up', bomb: false }) }),
+      ).not.toThrow() // straggling message after tombstone
+      expect(() => sock.dispatch('close')).not.toThrow() // the real close event racing in after
+      await expect(doInstance.alarm()).resolves.toBeUndefined() // host already null: no-op
+      expect(sock.sent.length).toBe(sentAfterEnd) // nothing sent after the end pair
     } finally {
       vi.unstubAllGlobals()
     }

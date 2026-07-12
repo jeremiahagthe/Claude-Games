@@ -18,6 +18,13 @@ import {
 
 const TICK_MS = 1000 / TICK_RATE
 const GRACE_MS = 5_000 // disconnect grace before elimination
+// Getting {matchId, token} from POST /bomber/join and actually opening the ws are separate
+// steps -- a client can vanish in between (a Ctrl-C is enough). Without a deadline the
+// players who DID connect would wait forever: start() fires only at conns.size ===
+// humanCount, and no alarm runs pre-start. So the DO arms this deadline the moment the room
+// (host) is created; if it fires pre-start, whoever has helloed by then plays (the no-shows
+// are backfilled as bots), and a room where NOBODY helloed is tombstoned instead.
+const START_DEADLINE_MS = 10_000
 
 export function parseBomberMatchId(pathname: string): string | null {
   // A DO id from idFromString() is always exactly 64 lowercase hex chars; anything else
@@ -101,6 +108,23 @@ export class BomberMatchHost {
     return { playerId, started: this.started }
   }
 
+  hasStarted(): boolean {
+    return this.started
+  }
+
+  // Start-deadline path (see START_DEADLINE_MS): the lobby promised humanCount humans but
+  // only some (or none) actually opened the ws. Whoever HAS helloed by the deadline plays --
+  // start() sizes the human roster off conns.size, so the no-shows become bot slots exactly
+  // as if the lobby had promised fewer humans. Zero connected -> 'empty': there is nobody to
+  // start a match for, the caller tombstones the room. Idempotent: a deadline racing a
+  // just-completed natural start is a harmless 'started'.
+  forceStart(): 'started' | 'empty' {
+    if (this.started) return 'started'
+    if (this.conns.size === 0) return 'empty'
+    this.start()
+    return 'started'
+  }
+
   // A socket closing does not eliminate the player outright -- it starts a GRACE_MS window
   // (checked at the top of every tick()); this only removes the ATTACHED socket so broadcasts
   // and the "room empty" check reflect who's actually listening.
@@ -175,11 +199,14 @@ export class BomberMatchHost {
 
   private start(): void {
     this.started = true
+    // Human slots = who actually connected, not the lobby's promise: identical at a natural
+    // start (conns.size === humanCount), smaller after a forceStart() with no-shows.
+    const humans = this.conns.size
     const seed = Math.floor(Math.random() * 2 ** 31)
     const names: string[] = []
     const bots: boolean[] = []
     for (let i = 0; i < MAX_PLAYERS; i++) {
-      if (i < this.humanCount) {
+      if (i < humans) {
         names.push(this.humanNames[i] ?? `p${i}`)
         bots.push(false)
       } else {
@@ -229,8 +256,7 @@ export class BomberMatchDO implements DurableObject {
       server.close(1002, 'bad token')
       return new Response(null, { status: 101, webSocket: client })
     }
-    this.host ??= new BomberMatchHost(humanCount)
-    if (this.host.humanCount !== humanCount) {
+    if (this.ensureHost(humanCount).humanCount !== humanCount) {
       // A stale/forged token disagreeing with the room this DO already committed to: the
       // matchId itself is the real secret (an unguessable 64-hex DO id, same trust model as
       // checkwait's tokenless ws route); this is a defensive consistency check, not auth.
@@ -256,7 +282,9 @@ export class BomberMatchDO implements DurableObject {
         server.close(1002, 'expected hello')
         return
       }
-      const joined = (this.host ??= new BomberMatchHost(humanCount)).join(
+      // re(create) the host lazily here too: the alarm loop may have tombstoned it between
+      // this socket's fetch() and its first message (same caveat as fragwait's match-do.ts).
+      const joined = this.ensureHost(humanCount).join(
         { send: (d) => server.send(d), close: (code, reason) => server.close(code, reason) },
         msg.name,
       )
@@ -277,8 +305,21 @@ export class BomberMatchDO implements DurableObject {
     return new Response(null, { status: 101, webSocket: client })
   }
 
+  // Single alarm handler, dispatched on phase (chess-match precedent for one-handler
+  // discipline): a DO has exactly ONE alarm slot, so the pre-start deadline and the running
+  // tick loop can never coexist -- the first tick alarm (set at natural start or by the
+  // deadline branch below) simply overwrites the pending deadline.
   async alarm(): Promise<void> {
     if (!this.host) return
+    if (!this.host.hasStarted()) {
+      // The start deadline fired before every promised human helloed.
+      if (this.host.forceStart() === 'empty') {
+        this.tombstone('never started') // nobody ever helloed: dead room, no match to run
+        return
+      }
+      void this.state.storage.setAlarm(Date.now() + TICK_MS) // enter the tick phase
+      return
+    }
     const action = this.host.tick()
     if (action.type === 'running') {
       // setAlarm is deliberately fire-and-forget (`void`): this runs inside the alarm handler
@@ -287,10 +328,24 @@ export class BomberMatchDO implements DurableObject {
       void this.state.storage.setAlarm(Date.now() + TICK_MS)
       return
     }
+    this.tombstone(action.type === 'ended' ? 'game over' : 'room empty')
+  }
+
+  private ensureHost(humanCount: number): BomberMatchHost {
+    if (!this.host) {
+      this.host = new BomberMatchHost(humanCount)
+      // Arm the start deadline the moment the room exists -- once per host, never re-armed
+      // per socket (that would let each straggler extend the wait for everyone already in).
+      void this.state.storage.setAlarm(Date.now() + START_DEADLINE_MS)
+    }
+    return this.host
+  }
+
+  private tombstone(reason: string): void {
     void this.state.storage.deleteAlarm()
     for (const sock of this.sockets.values()) {
       try {
-        sock.close(1000, action.type === 'ended' ? 'game over' : 'room empty')
+        sock.close(1000, reason)
       } catch {
         /* already closed */
       }
