@@ -285,6 +285,61 @@ describe('4-bot match reaches a result', () => {
   }
 })
 
+describe('no voluntary suicide into flames (wanderDir hole — feel-gate regression)', () => {
+  // Root cause of the "bots all die in ~2s" feel-gate bug: a bot standing on a
+  // SAFE tile, out of options (bomb on cooldown, no reachable approach target),
+  // fell back to wanderDir, which picked the least-dangerous WALKABLE neighbour
+  // even when that neighbour was an active flame — walking into its own just-
+  // detonated bomb's blast. wanderDir now refuses to leave a safe tile for an
+  // unsafe one.
+  it('a bot on a safe tile does not step into an adjacent active flame', () => {
+    // Bot at (5,5) is safe; its only non-pillar walkable neighbours are flame
+    // tiles (an active blast just washed over them). It must stay put, never
+    // choose a direction that walks into fire.
+    let s = clearArena(createMatch(3, NAMES, BOTS))
+    s = {
+      ...s,
+      players: s.players.map((p, i) => (i === 0 ? { ...p, x: 5, y: 5, dir: null, stepCooldown: 0, activeBombs: 1, bombCap: 1 } : { ...p, alive: false })),
+      // active flames on every orthogonal neighbour of (5,5) — stepping any way burns.
+      flames: [
+        { x: 4, y: 5, ticks: 8 }, { x: 6, y: 5, ticks: 8 },
+        { x: 5, y: 4, ticks: 8 }, { x: 5, y: 6, ticks: 8 },
+      ],
+    }
+    const mind = createBotMind(1)
+    const chosen = botDecide(s, 0, mind, 'hard')
+    // Whatever it decides, applying it must not land the bot on a flame tile.
+    const dest = chosen.dir ? move(s.players[0]!.x, s.players[0]!.y, chosen.dir) : { x: 5, y: 5 }
+    const onFlame = s.flames.some((f) => f.x === dest.x && f.y === dest.y)
+    expect(onFlame).toBe(false)
+  })
+
+  for (const difficulty of ['easy', 'normal', 'hard'] as const) {
+    it(`${difficulty}: bots do not mass-suicide — not all three dead by tick 60 across seeds`, () => {
+      // Before the fix, 50–67% of default-spawn matches had all three bots dead
+      // by tick ~46–56 (one bomb-fuse cycle). Assert that never happens now.
+      let massSuicides = 0
+      for (let seed = 0; seed < 20; seed++) {
+        let state = createMatch(seed, ['you', 'b1', 'b2', 'b3'], [false, true, true, true])
+        const minds: BotMind[] = [1, 2, 3].map((id) => createBotMind((seed + id) >>> 0))
+        const dead: Record<number, number> = {}
+        for (let t = 0; t < 60 && state.result === null; t++) {
+          const inputs: (Input | null)[] = [
+            { dir: null, bomb: false },
+            botDecide(state, 1, minds[0]!, difficulty),
+            botDecide(state, 2, minds[1]!, difficulty),
+            botDecide(state, 3, minds[2]!, difficulty),
+          ]
+          state = step(state, inputs)
+          for (let i = 1; i <= 3; i++) if (!state.players[i]!.alive && dead[i] === undefined) dead[i] = state.tick
+        }
+        if ([1, 2, 3].every((i) => dead[i] !== undefined)) massSuicides++
+      }
+      expect(massSuicides).toBe(0)
+    })
+  }
+})
+
 describe('determinism', () => {
   it('same seed → identical decision sequence', () => {
     const runOnce = (): Input[] => {

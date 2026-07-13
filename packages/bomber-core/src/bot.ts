@@ -249,19 +249,38 @@ function wanderDir(state: BomberState, dmap: number[], player: PlayerState, cade
   const viaEscape = findEscapeDir(state, dmap, player, cadence)
   if (viaEscape) return viaEscape
 
+  const stepCost = stepTicks(player.speed)
+  const here = dmap[idx(player.x, player.y)]!
+  const hereSafe = here === Infinity || here > cadence
+
+  // Prefer a direction we can actually survive occupying. A bot standing on a
+  // SAFE tile must never wander into an active or imminent flame just because
+  // it is the "least dangerous" walkable neighbour — that is a voluntary
+  // suicide (e.g. stepping into your own bomb's blast the tick it detonates).
   let bestDir: Dir | null = null
   let bestVal = -Infinity
+  let bestUnsafeDir: Dir | null = null
+  let bestUnsafeVal = -Infinity
   for (const dir of DIRS) {
     const t = targetTile(player.x, player.y, dir)
     if (!isWalkable(state, t.x, t.y)) continue
     const v = dmap[idx(t.x, t.y)]!
     const val = v === Infinity ? Number.MAX_SAFE_INTEGER : v
-    if (val > bestVal) {
-      bestVal = val
-      bestDir = dir
+    if (holdSafe(state, dmap, player, dir, cadence, stepCost).safe) {
+      if (val > bestVal) {
+        bestVal = val
+        bestDir = dir
+      }
+    } else if (val > bestUnsafeVal) {
+      bestUnsafeVal = val
+      bestUnsafeDir = dir
     }
   }
-  return bestDir
+  if (bestDir) return bestDir
+  // No safe wander target. If we're already safe, STAY PUT rather than walk
+  // into fire; only if the current tile is itself doomed do we flee to the
+  // least-dangerous neighbour to buy time for a later re-decision.
+  return hereSafe ? null : bestUnsafeDir
 }
 
 function hasBombTargetAdjacent(state: BomberState, player: PlayerState): boolean {
