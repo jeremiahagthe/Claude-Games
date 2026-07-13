@@ -13,7 +13,7 @@
     {
       "id": "boomwait",
       "title": "boomwait — terminal bomber",
-      "cmd": "npx -y boomwait@0.1.0"
+      "cmd": "npx -y boomwait@0.1.1"
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "name": "boomwait-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "boomwait bomberman rules engine: grid, seeded layout, deterministic sim step",
   "type": "module",
   "license": "MIT",
