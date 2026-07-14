@@ -9,12 +9,15 @@
       { "name": "CHESS_LOBBY", "class_name": "ChessLobbyDO" },
       { "name": "CHESS_MATCH", "class_name": "ChessMatchDO" },
       { "name": "BOMBER_LOBBY", "class_name": "BomberLobbyDO" },
-      { "name": "BOMBER_MATCH", "class_name": "BomberMatchDO" }
+      { "name": "BOMBER_MATCH", "class_name": "BomberMatchDO" },
+      { "name": "SNAKE_LOBBY", "class_name": "SnakeLobbyDO" },
+      { "name": "SNAKE_MATCH", "class_name": "SnakeMatchDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["MatchDO", "LobbyDO"] },
     { "tag": "v2", "new_sqlite_classes": ["ChessLobbyDO", "ChessMatchDO"] },
-    { "tag": "v3", "new_sqlite_classes": ["BomberLobbyDO", "BomberMatchDO"] }
+    { "tag": "v3", "new_sqlite_classes": ["BomberLobbyDO", "BomberMatchDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["SnakeLobbyDO", "SnakeMatchDO"] }
   ]
 }

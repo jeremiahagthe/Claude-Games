@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { GROWTH_PER_FOOD, GRID_W } from '../src/constants.js'
 import { createMatch } from '../src/match.js'
-import { step } from '../src/step.js'
+import { killSnake, step } from '../src/step.js'
 import type { Input, MatchState, SnakeState } from '../src/state.js'
 
 const NAMES = ['a','b','c','d'], BOTS = [false,true,true,true]
@@ -96,3 +96,39 @@ describe('purity', () => {
 function deadRest() {
   return [1,2,3].map((id) => snake(id, [], 'right', { alive: false, cells: [] }))
 }
+
+describe('killSnake', () => {
+  it('marks the snake dead, clears cells, corpse-converts even-indexed non-wall cells not already food', () => {
+    let s = base({ snakes: [snake(0,[{x:10,y:10},{x:9,y:10},{x:8,y:10},{x:7,y:10},{x:6,y:10}],'right'), ...deadRest()] })
+    s = killSnake(s, 0)
+    expect(s.snakes[0]!.alive).toBe(false)
+    expect(s.snakes[0]!.cells).toEqual([])
+    const foodIdx = new Set(s.food.map((f) => `${f.x},${f.y}`))
+    expect(foodIdx.has('10,10')).toBe(true) // index 0
+    expect(foodIdx.has('8,10')).toBe(true)  // index 2
+    expect(foodIdx.has('6,10')).toBe(true)  // index 4
+    expect(foodIdx.has('9,10')).toBe(false) // odd index skipped
+    expect(foodIdx.has('7,10')).toBe(false) // odd index skipped
+  })
+
+  it('is a no-op on an already-dead (or unknown) snake', () => {
+    const s = base({ snakes: [snake(0,[],'right',{alive:false,cells:[]}), ...deadRest()] })
+    expect(killSnake(s, 0)).toEqual(s)
+    expect(killSnake(s, 99)).toEqual(s)
+  })
+
+  it('skips wall/closed-ring cells and does not duplicate an already-food cell', () => {
+    let s = base({ rings: 3, snakes: [snake(0,[{x:2,y:10},{x:9,y:10},{x:8,y:10}],'right'), ...deadRest()], food: [{x:8,y:10}] })
+    s = killSnake(s, 0)
+    const foodIdx = new Set(s.food.map((f) => `${f.x},${f.y}`))
+    expect(foodIdx.has('2,10')).toBe(false) // index 0 is inside the closed ring (x=2 < rings=3): wall, skipped
+    expect(s.food.filter((f) => f.x === 8 && f.y === 10)).toHaveLength(1) // index 2 already food: not duplicated
+  })
+
+  it('does not mutate its input state', () => {
+    const s0 = base({ snakes: [snake(0,[{x:10,y:10},{x:9,y:10},{x:8,y:10},{x:7,y:10}],'right'), ...deadRest()] })
+    const snap = JSON.stringify(s0)
+    killSnake(s0, 0)
+    expect(JSON.stringify(s0)).toBe(snap)
+  })
+})

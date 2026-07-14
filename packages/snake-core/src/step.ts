@@ -74,6 +74,31 @@ function stampResult(existing: Result | null, snakes: SnakeState[]): Result | nu
   return null
 }
 
+// Kills a single snake OUTSIDE the normal step() cadence — used by the server to resolve a
+// disconnect-grace expiry (see snakewait server Task 7): applies the same corpse rule as
+// step()'s Phase 7 (even-indexed pre-death cells → food, skipping walls/closed-ring cells and
+// cells already carrying food), clears its cells, and marks it dead. Pure and a no-op if the
+// snake is unknown or already dead — this never stamps a result itself; the next step() call
+// picks that up naturally via its own Phase 9 (stampResult sees the now-dead snake).
+export function killSnake(state: MatchState, id: number): MatchState {
+  const snake = state.snakes.find((s) => s.id === id)
+  if (!snake || !snake.alive) return state
+
+  const food = state.food.slice()
+  const foodSet = new Set(food.map((f) => idx(f.x, f.y)))
+  for (let ci = 0; ci < snake.cells.length; ci += 2) {
+    const c = snake.cells[ci]!
+    if (isWall(c.x, c.y, state.rings)) continue
+    const cIdx = idx(c.x, c.y)
+    if (foodSet.has(cIdx)) continue
+    food.push(c)
+    foodSet.add(cIdx)
+  }
+
+  const snakes = state.snakes.map((s) => (s.id === id ? { ...s, alive: false, pendingDir: null, cells: [] } : s))
+  return { ...state, snakes, food }
+}
+
 export function step(state: MatchState, inputs: (Input | null)[]): MatchState {
   const newTick = state.tick + 1
 

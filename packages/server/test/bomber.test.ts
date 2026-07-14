@@ -612,13 +612,17 @@ describe('BomberMatchDO', () => {
 })
 
 describe('wrangler.jsonc migrations', () => {
-  it('append-only: v1, v2, v3 tags present in order; v1/v2 untouched', () => {
+  // v1/v2/v3 tags/contents are pinned exactly and must never be edited (append-only); later
+  // migrations (e.g. v4 for snakewait — see snake.test.ts for its own literal check) are
+  // deliberately NOT constrained to an exact array length here, so this test doesn't need
+  // editing every time a new game's migration is appended.
+  it('append-only: v1, v2, v3 tags present in order at the front; v1/v2/v3 untouched', () => {
     const raw = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8')
     const parsed = JSON.parse(raw.replace(/\/\/.*$/gm, '')) as {
       migrations: { tag: string; new_sqlite_classes: string[] }[]
       durable_objects: { bindings: { name: string; class_name: string }[] }
     }
-    expect(parsed.migrations.map((m) => m.tag)).toEqual(['v1', 'v2', 'v3'])
+    expect(parsed.migrations.slice(0, 3).map((m) => m.tag)).toEqual(['v1', 'v2', 'v3'])
     expect(parsed.migrations[0]).toEqual({ tag: 'v1', new_sqlite_classes: ['MatchDO', 'LobbyDO'] })
     expect(parsed.migrations[1]).toEqual({ tag: 'v2', new_sqlite_classes: ['ChessLobbyDO', 'ChessMatchDO'] })
     expect(parsed.migrations[2]).toEqual({ tag: 'v3', new_sqlite_classes: ['BomberLobbyDO', 'BomberMatchDO'] })
