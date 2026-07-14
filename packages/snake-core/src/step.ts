@@ -1,4 +1,10 @@
-import { GROWTH_PER_FOOD, GRID_H, GRID_W } from './constants.js'
+import {
+  GROWTH_PER_FOOD,
+  GRID_H,
+  GRID_W,
+  SHRINK_INTERVAL_TICKS,
+  SHRINK_START_TICK,
+} from './constants.js'
 import { randStep } from './prng.js'
 import type { Cellxy, Dir, Food, Input, MatchState, Result, SnakeState } from './state.js'
 import { idx, isWall, stepTicksAt } from './state.js'
@@ -12,6 +18,53 @@ const DELTA: Record<Dir, Cellxy> = {
 }
 
 const MAX_RESPAWN_ATTEMPTS = 200
+const MAX_RINGS = Math.min(GRID_W, GRID_H) / 2 // 20 — grid fully closed at this ring count
+
+// Sudden-death ring count for a given tick: 0 before SHRINK_START_TICK, then +1 every
+// SHRINK_INTERVAL_TICKS, capped at MAX_RINGS (grid fully closed; every cell is wall).
+function ringsAt(tick: number): number {
+  if (tick < SHRINK_START_TICK) return 0
+  const rings = 1 + Math.floor((tick - SHRINK_START_TICK) / SHRINK_INTERVAL_TICKS)
+  return Math.min(rings, MAX_RINGS)
+}
+
+// Sudden-death shrink: any alive snake with a cell inside the newly closed ring dies
+// entirely; its cells not inside a closed ring decay to food per the corpse-food rule
+// (even-indexed, skipping wall/existing-food cells); food already inside the newly
+// closed ring is destroyed. No-op if the ring count didn't advance this tick.
+function applyShrink(
+  snakes: SnakeState[],
+  food: Food[],
+  oldRings: number,
+  newRings: number,
+): { snakes: SnakeState[]; food: Food[] } {
+  if (newRings <= oldRings) return { snakes, food }
+
+  let nextSnakes = snakes
+  let nextFood = food.filter((f) => !isWall(f.x, f.y, newRings))
+
+  for (const snake of snakes) {
+    if (!snake.alive) continue
+    const hitsRing = snake.cells.some((c) => isWall(c.x, c.y, newRings))
+    if (!hitsRing) continue
+
+    const foodSet = new Set(nextFood.map((f) => idx(f.x, f.y)))
+    for (let ci = 0; ci < snake.cells.length; ci += 2) {
+      const c = snake.cells[ci]!
+      if (isWall(c.x, c.y, newRings)) continue
+      const cIdx = idx(c.x, c.y)
+      if (foodSet.has(cIdx)) continue
+      nextFood = [...nextFood, c]
+      foodSet.add(cIdx)
+    }
+
+    nextSnakes = nextSnakes.map((s) =>
+      s.id === snake.id ? { ...s, alive: false, pendingDir: null, cells: [] } : s,
+    )
+  }
+
+  return { snakes: nextSnakes, food: nextFood }
+}
 
 function stampResult(existing: Result | null, snakes: SnakeState[]): Result | null {
   if (existing !== null) return existing
@@ -34,15 +87,19 @@ export function step(state: MatchState, inputs: (Input | null)[]): MatchState {
     return snake
   })
 
-  // Phase 2: cooldown
+  // Phase 2: cooldown — shrink still runs on skipped ticks (tick/shrink/result run every tick)
   const newCooldown = state.stepCooldown - 1
   if (newCooldown > 0) {
+    const ringsOnSkip = ringsAt(newTick)
+    const shrunkOnSkip = applyShrink(snakesAfterInput, state.food, state.rings, ringsOnSkip)
     return {
       ...state,
       tick: newTick,
       stepCooldown: newCooldown,
-      snakes: snakesAfterInput,
-      result: stampResult(state.result, snakesAfterInput),
+      rings: ringsOnSkip,
+      snakes: shrunkOnSkip.snakes,
+      food: shrunkOnSkip.food,
+      result: stampResult(state.result, shrunkOnSkip.snakes),
     }
   }
 
@@ -183,7 +240,13 @@ export function step(state: MatchState, inputs: (Input | null)[]): MatchState {
     }
   }
 
-  // Phase 8: result stamp (set once)
+  // Phase 8: shrink (after movement/deaths, before result stamp — shrink kills count this tick)
+  const newRings = ringsAt(newTick)
+  const shrunk = applyShrink(snakes, food, state.rings, newRings)
+  snakes = shrunk.snakes
+  food = shrunk.food
+
+  // Phase 9: result stamp (set once)
   const result = stampResult(state.result, snakes)
 
   return {
@@ -191,6 +254,7 @@ export function step(state: MatchState, inputs: (Input | null)[]): MatchState {
     tick: newTick,
     stepCooldown: stepTicksAt(newTick),
     rng,
+    rings: newRings,
     snakes,
     food,
     result,
