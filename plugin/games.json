@@ -14,6 +14,11 @@
       "id": "boomwait",
       "title": "boomwait — terminal bomber",
       "cmd": "npx -y boomwait@0.1.2"
+    },
+    {
+      "id": "snakewait",
+      "title": "snakewait — terminal snake battle",
+      "cmd": "npx -y snakewait@0.1.0"
     }
   ]
 }
