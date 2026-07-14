@@ -340,7 +340,7 @@ export function parseSnakeServerMsg(raw: unknown): SnakeServerMsg | null {
     const bots = o['bots']
     if (!isPlayerId(you)) return null
     if (!isFiniteNum(seed)) return null
-    if (!Array.isArray(names) || names.length !== MAX_PLAYERS || !names.every((n) => typeof n === 'string')) return null
+    if (!Array.isArray(names) || names.length !== MAX_PLAYERS || !names.every((n) => typeof n === 'string' && n.length <= MAX_NAME_LEN)) return null
     if (!Array.isArray(bots) || bots.length !== MAX_PLAYERS || !bots.every((b) => typeof b === 'boolean')) return null
     return { t: 'start', you, seed, names: [...(names as string[])], bots: [...(bots as boolean[])] }
   }
