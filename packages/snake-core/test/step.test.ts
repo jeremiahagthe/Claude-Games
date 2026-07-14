@@ -76,6 +76,10 @@ describe('food', () => {
     const foodIdx = new Set(s.food.map((f) => `${f.x},${f.y}`))
     expect(foodIdx.has('0,10')).toBe(true)            // index 0 (head at death)
     expect(foodIdx.has('2,10')).toBe(true)            // index 2
+    // Pins PRE-TICK body semantics: a snake that dies mid-move never sheds its tail
+    // that tick, so index 4 of the 5-cell body at death — the would-be shed-tail
+    // cell — still becomes food (per plan's corpse-test comment).
+    expect(foodIdx.has('4,10')).toBe(true)            // index 4 (shed-tail cell)
     expect(foodIdx.has('1,10')).toBe(false)           // odd index skipped
   })
 })
