@@ -41,7 +41,12 @@ export function tooSmallScreen(cols: number, rows: number): string {
   const lines: string[] = []
   for (let i = 0; i < top; i++) lines.push('')
   lines.push(' '.repeat(left) + msg)
-  return lines.join('\n')
+  // Same cursor-positioning framing as renderFrame (see there for the
+  // scroll-bug root cause): ESC[H repaints from the top-left instead of
+  // scrolling, per-line ESC[K clears resize residue, trailing ESC[J clears
+  // residue below. Plain text only — no SGR is ever emitted here, so unlike
+  // renderFrame there is no RESET to trail.
+  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + `${ESC}[J`
 }
 
 // --- colors ----------------------------------------------------------------
@@ -343,7 +348,18 @@ export function renderFrame(state: MatchState, you: number, layout: Layout, stat
   // status row
   lines.push(statusLine.slice(0, charCols + 2 + HUD_WIDTH))
 
-  return lines.join('\n')
+  // Per-line clear-to-EOL (ESC[K) kills resize residue to the right of every
+  // line (checkwait/chess-4 lesson, see bomber-client's renderFrame); leading
+  // ESC[H repaints from the top-left every frame instead of scrolling, and
+  // trailing ESC[J kills residue below — the renderer never scrolls, so both
+  // are always safe. composeLine already RESETs at the end of any border/
+  // arena row that ended in a non-default color (see composeLine above), so
+  // this trailing RESET is a final belt-and-suspenders guarantee that the
+  // whole frame — including the caller-supplied statusLine — hands the
+  // terminal back in a default color state; matches bomber-client's tail
+  // exactly. Mono frames carry no SGR at all, so there is nothing to reset.
+  const tail = mode === 'mono' ? '' : RESET
+  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + tail + `${ESC}[J`
 }
 
 // Right HUD sidebar: hudText arrives already budgeted to exactly HUD_WIDTH

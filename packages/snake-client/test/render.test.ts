@@ -3,7 +3,22 @@ import type { MatchState } from 'snakewait-core'
 import { createMatch } from 'snakewait-core'
 import { chooseLayout, renderFrame, tooSmallScreen } from '../src/render.js'
 
+const ESC = '\x1b'
+// The line separator renderFrame/tooSmallScreen now use instead of a bare
+// '\n' (feel-gate fix: ESC[K clears resize residue to the right of every
+// line so repaints never scroll).
+const FRAME_SEP = `${ESC}[K\r\n`
+
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '')
+
+// Strips the frame-level positioning wrapper (leading ESC[H, trailing
+// optional RESET + ESC[J) added by the feel-gate fix, then splits on the new
+// ESC[K\r\n line separator — giving back the same logical line list the
+// pre-fix tests pinned via `frame.split('\n')`.
+function frameLines(frame: string): string[] {
+  const body = frame.replace(/^\x1b\[H/, '').replace(/(\x1b\[0m)?\x1b\[J$/, '')
+  return body.split(FRAME_SEP)
+}
 
 function baseMatch(): MatchState {
   return createMatch(11, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
@@ -15,7 +30,7 @@ describe('the 80x24 gate (asserted, never eyeballed)', () => {
     expect(layout.k).toBe(1)
     const s = createMatch(7, ['jeremiah', 'bot·1', 'bot·2', 'bot·3'], [false, true, true, true])
     const frame = renderFrame(s, 0, layout, 'claude is working…', 'truecolor')
-    const lines = frame.split('\n')
+    const lines = frameLines(frame)
     expect(lines.length).toBeLessThanOrEqual(23)
     for (const line of lines) {
       // The plan's pinned literal was /\[[0-9;]*m/g, which omits the leading
@@ -51,7 +66,7 @@ describe('the 80x24 gate (asserted, never eyeballed)', () => {
     expect(layout.k).toBe(2)
     const s = createMatch(7, ['jeremiah', 'bot·1', 'bot·2', 'bot·3'], [false, true, true, true])
     const frame = renderFrame(s, 0, layout, 'claude is working…', 'truecolor')
-    const lines = frame.split('\n')
+    const lines = frameLines(frame)
     // 40 arena rows (GRID_H*k/2 = 40*2/2) + top + bottom border = 42 border/arena
     // rows, plus one status row = 43 total lines — matches the rows>=43 gate exactly.
     expect(lines.length).toBeLessThanOrEqual(43)
@@ -65,10 +80,15 @@ describe('the 80x24 gate (asserted, never eyeballed)', () => {
 describe('additional render coverage', () => {
   const layout = chooseLayout(80, 24)!
 
-  it('mono mode: no escape sequences, glyph set only', () => {
+  it('mono mode: no color escape sequences, glyph set only', () => {
     const s = baseMatch()
     const frame = renderFrame(s, 0, layout, 'status', 'mono')
+    // Root cause: the feel-gate fix makes every frame carry positioning
+    // escapes (ESC[H / ESC[K / ESC[J) unconditionally, including in mono
+    // mode, so the old "frame has zero escapes" pin no longer holds — only
+    // SGR color escapes ('...m') are guaranteed absent in mono.
     expect(frame).toBe(strip(frame))
+    expect(frame).not.toMatch(/\x1b\[[0-9;]*m/)
     expect(frame).toMatch(/[oxOX+#*@]/) // body/head glyphs for at least one snake
     expect(frame).toContain('█') // walls/border glyph
   })
@@ -85,7 +105,7 @@ describe('additional render coverage', () => {
     const dead = { ...s.snakes[0]!, alive: false, cells: [] }
     const state: MatchState = { ...s, snakes: [dead, ...s.snakes.slice(1)], food: [{ x: 0, y: 0 }] }
     const frame = renderFrame(state, 1, layout, '', 'mono')
-    const lines = frame.split('\n')
+    const lines = frameLines(frame)
     // line 0 = top border; line 1 = first arena row; col 0 = left border, col 1 = cell x=0.
     expect(lines[1]!.charAt(1)).toBe('.')
   })
@@ -99,10 +119,10 @@ describe('additional render coverage', () => {
       snakes: s.snakes.map((sn) => ({ ...sn, alive: false, cells: [] })),
     }
     const monoFrame = renderFrame(state, 0, layout, '', 'mono')
-    expect(monoFrame.split('\n')[1]!.charAt(1)).toBe('█')
+    expect(frameLines(monoFrame)[1]!.charAt(1)).toBe('█')
 
     const trueFrame = renderFrame(state, 0, layout, '', 'truecolor')
-    expect(trueFrame.split('\n')[1]).toContain('38;2;90;90;100')
+    expect(frameLines(trueFrame)[1]).toContain('38;2;90;90;100')
   })
 })
 
@@ -110,6 +130,42 @@ describe('tooSmallScreen', () => {
   it('centers the message within the given window', () => {
     const msg = tooSmallScreen(40, 10)
     expect(msg).toContain('snakewait needs 80x24')
-    expect(msg.split('\n').length).toBeLessThanOrEqual(10)
+    expect(frameLines(msg).length).toBeLessThanOrEqual(10)
+  })
+})
+
+// Feel-gate fix: the renderer scrolled the terminal because renderFrame ended
+// with a bare `lines.join('\n')` — no cursor-positioning escapes, so every
+// 50ms paint appended fresh rows below the previous frame instead of
+// repainting in place. Pin the raw (pre-strip) escape framing directly,
+// mirroring bomber-client's renderFrame contract (packages/bomber-client/src/render.ts:329-334).
+describe('frame repaints in place (feel-gate: no terminal scroll)', () => {
+  const layout = chooseLayout(80, 24)!
+
+  it('renderFrame: starts with ESC[H, lines joined by ESC[K\\r\\n, ends with ESC[J', () => {
+    const s = baseMatch()
+    const frame = renderFrame(s, 0, layout, 'status', 'truecolor')
+    expect(frame.startsWith(`${ESC}[H`)).toBe(true)
+    expect(frame.endsWith(`${ESC}[J`)).toBe(true)
+    expect(frame).toContain(FRAME_SEP)
+    // Every line boundary uses ESC[K\r\n, never a bare '\n' — a lone '\n' not
+    // preceded by ESC[K\r would mean a line broke without clearing to EOL.
+    const withoutSep = frame.split(FRAME_SEP).join('')
+    expect(withoutSep.includes('\n')).toBe(false)
+  })
+
+  it('renderFrame: mono mode carries no trailing RESET (no SGR to reset)', () => {
+    const s = baseMatch()
+    const frame = renderFrame(s, 0, layout, 'status', 'mono')
+    expect(frame.endsWith(`${ESC}[J`)).toBe(true)
+    expect(frame.endsWith(`${ESC}[0m${ESC}[J`)).toBe(false)
+  })
+
+  it('tooSmallScreen: starts with ESC[H, lines joined by ESC[K\\r\\n, ends with ESC[J, no RESET (plain text)', () => {
+    const msg = tooSmallScreen(40, 10)
+    expect(msg.startsWith(`${ESC}[H`)).toBe(true)
+    expect(msg.endsWith(`${ESC}[J`)).toBe(true)
+    expect(msg.endsWith(`${ESC}[0m${ESC}[J`)).toBe(false)
+    expect(msg).toContain(FRAME_SEP)
   })
 })
