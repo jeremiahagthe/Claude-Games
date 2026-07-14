@@ -123,13 +123,19 @@ export async function setupGame(): Promise<GameSession> {
   }
 }
 
-// Exported for online.ts (next task) — same win/loss/draw phrasing offline
-// and online. Bot opponents are always named bot·<id> (offline.ts's
-// BOT_NAMES, ids 1-3) so the winner's label can be derived from its id alone
-// without threading the full names array through this signature.
-export function resultLine(result: Result, you: number): string {
+// Exported for online.ts — same win/loss/draw phrasing offline and online.
+// `names` is optional: offline.ts never passes it, since its opponents are
+// always named bot·<id> (offline.ts's BOT_NAMES, ids 1-3) and that label can
+// be derived from the winner's id alone. online.ts DOES pass StartMsg.names
+// (Task 10 review carry-item): an online winner can be a real human with an
+// actual handle, so falling back to the offline bot·<id> label there would
+// mislabel them. When `names` is omitted the bot·<id> fallback is kept,
+// preserving offline's existing (correct) behavior exactly.
+export function resultLine(result: Result, you: number, names?: string[]): string {
   if (result.kind === 'draw') return 'draw'
-  return result.winner === you ? 'you won!' : `bot·${result.winner} won`
+  if (result.winner === you) return 'you won!'
+  const label = names?.[result.winner] ?? `bot·${result.winner}`
+  return `${label} won`
 }
 
 // Shared tail for both loops: finished screen (if the match ended, not on a
