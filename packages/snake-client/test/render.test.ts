@@ -41,9 +41,24 @@ describe('the 80x24 gate (asserted, never eyeballed)', () => {
     expect(chooseLayout(79, 24)).toBeNull()
     expect(chooseLayout(80, 23)).toBeNull()
   })
-  it('k=2 only at 114x43+', () => {
-    expect(chooseLayout(114, 43)!.k).toBe(2)
-    expect(chooseLayout(113, 43)!.k).toBe(1)
+  it('k=2 only at 136x43+ (root cause: the 114 pin forgot the 22-col HUD — a k=2 frame is GRID_W*2 + 2 border + 22 HUD = 136 visible cols, not 114)', () => {
+    expect(chooseLayout(136, 43)!.k).toBe(2)
+    expect(chooseLayout(135, 43)!.k).toBe(1)
+  })
+
+  it('exact fit at 136x43: k=2, every border/arena row exactly 136 visible cols', () => {
+    const layout = chooseLayout(136, 43)!
+    expect(layout.k).toBe(2)
+    const s = createMatch(7, ['jeremiah', 'bot·1', 'bot·2', 'bot·3'], [false, true, true, true])
+    const frame = renderFrame(s, 0, layout, 'claude is working…', 'truecolor')
+    const lines = frame.split('\n')
+    // 40 arena rows (GRID_H*k/2 = 40*2/2) + top + bottom border = 42 border/arena
+    // rows, plus one status row = 43 total lines — matches the rows>=43 gate exactly.
+    expect(lines.length).toBeLessThanOrEqual(43)
+    for (let i = 0; i < lines.length - 1; i++) {
+      const visible = lines[i]!.replace(/\x1b\[[0-9;]*m/g, '')
+      expect(visible.length, `row ${i}: ${JSON.stringify(visible)}`).toBe(136)
+    }
   })
 })
 

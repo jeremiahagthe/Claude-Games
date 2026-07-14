@@ -22,6 +22,13 @@ export async function runOffline(opts: { difficulty: Difficulty; name: string; s
   // the same seed always reproduces the same match, bots included).
   const minds = [1, 2, 3].map((id) => createBotMind((seed + id) >>> 0))
 
+  // Finding 2 (final review): the sim clears a dead snake's `cells` to `[]`, and
+  // last-alive-wins means YOU are always dead by the time a loss/draw finale
+  // renders — so state.snakes[YOU].cells.length is always 0 there. Track the
+  // player's own length here instead, updated every tick while still alive, and
+  // hand THAT to the share card so a lost game reports its real pre-death length.
+  let lastLength = state.snakes[YOU]!.cells.length
+
   const redraw = (): void => {
     const layout = session.layout()
     if (layout === null) {
@@ -54,6 +61,7 @@ export async function runOffline(opts: { difficulty: Difficulty; name: string; s
         botDecide(state, 3, minds[2]!, opts.difficulty),
       ]
       state = step(state, inputs)
+      if (state.snakes[YOU]!.alive) lastLength = state.snakes[YOU]!.cells.length
       redraw()
       if (session.quitRequested() || state.result) {
         clearInterval(timer)
@@ -77,7 +85,7 @@ export async function runOffline(opts: { difficulty: Difficulty; name: string; s
           screen: layout
             ? renderFrame(state, YOU, layout, `${resultLine(state.result, YOU)} — press any key`, session.colorMode)
             : `${tooSmallScreen(process.stdout.columns ?? 80, process.stdout.rows ?? 24)}\n${resultLine(state.result, YOU)} — press any key`,
-          shareText: shareCard(state.result, YOU, state.tick, state.snakes[YOU]!.cells.length, `bot·${opts.difficulty}`),
+          shareText: shareCard(state.result, YOU, state.tick, lastLength, `bot·${opts.difficulty}`),
         }
       : null,
   })

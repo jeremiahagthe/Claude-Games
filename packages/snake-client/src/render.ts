@@ -20,8 +20,16 @@ export interface Layout {
 // k=2 only when the window comfortably fits the doubled arena PLUS HUD/status
 // rows; k=1 is the baseline 80x24 terminal default. Below 80x24 there is no
 // layout that fits at all.
+// k=2 arithmetic: a k=2 frame is GRID_W*k + 2 (border) + HUD_WIDTH visible cols
+// = 56*2 + 2 + 22 = 136, and GRID_H*k/2 + 2 (border) + 1 (status row) = 40 + 2 + 1
+// = 43 visible rows. The original "114x43+" pin computed cols as GRID_W*k + 2
+// only (114) and forgot to add HUD_WIDTH (22) — every terminal from 114 to 135
+// cols wide was wide enough to pass the gate but too narrow to hold the actual
+// frame, so every line wrapped and the screen garbled. The rows side of that
+// same pin (43) was NOT defective: it already equals the frame's real vertical
+// need exactly, so it is unchanged here.
 export function chooseLayout(cols: number, rows: number): Layout | null {
-  if (cols >= 114 && rows >= 43) return { k: 2, cols, rows }
+  if (cols >= 136 && rows >= 43) return { k: 2, cols, rows }
   if (cols >= 80 && rows >= 24) return { k: 1, cols, rows }
   return null
 }

@@ -239,6 +239,74 @@ describe('runOnline finale (result precedence + names carry-item)', () => {
   })
 })
 
+// --- share-card length + short-snakes-array safety (Findings 2 & 3) -------------------------
+//
+// Finding 2: the sim clears a dead snake's `cells` to `[]`, and in online play you're always
+// dead-or-missing by the final snap when you lose — passing state.snakes[you].cells.length
+// straight to shareCard reported "length 0" on every loss. online.ts must track the player's
+// own length client-side (looked up by id, updated on every snap while alive) and pass THAT.
+//
+// Finding 3: the wire validator admits a `snakes` array of length 0..4 with no id/slot
+// guarantee, so `state.snakes[you]` (array-position indexing) can be undefined on a
+// hostile/buggy server's final snap. The fix must look the snake up by id with a safe fallback
+// instead of indexing positionally, so a short/empty snakes array never throws.
+function snapWithYouSnake(
+  opts: { alive?: 0 | 1; segments?: [number, number][]; result?: [0, number] | [1] | null },
+  tick = 3,
+): unknown {
+  const { alive = 1, segments = [], result = null } = opts
+  return {
+    t: 'snap',
+    state: {
+      tick,
+      cd: 4,
+      rng: 1,
+      rings: 0,
+      food: [],
+      snakes: [[0, 'you', 0, alive, 1, 0, 0, 7, 4, segments]],
+      result,
+    },
+  }
+}
+
+function snapWithNoSnakes(result: [0, number] | [1] | null, tick = 3): unknown {
+  return {
+    t: 'snap',
+    state: { tick, cd: 4, rng: 1, rings: 0, food: [], snakes: [], result },
+  }
+}
+
+describe('runOnline share card length + short snakes array (Findings 2 & 3)', () => {
+  it('carries the pre-death length into the share card when you lose, not 0', async () => {
+    const { screen, shareText } = await runFinale((ws) => {
+      humanStart(ws)
+      setTimeout(() => {
+        // Alive, grown to 5 cells (1 head + a 4-long RLE segment run down).
+        ws.emitJson(snapWithYouSnake({ alive: 1, segments: [[2, 4]] }))
+        // Then dead, cells cleared by the sim, someone else's win baked into the snap.
+        ws.emitJson(snapWithYouSnake({ alive: 0, segments: [], result: [0, 1] }))
+      }, 10)
+    })
+    expect(screen).toContain('alice won — press any key')
+    expect(shareText).toContain('length 5')
+    expect(shareText).not.toContain('length 0')
+  })
+
+  it("a final snap with an empty snakes array doesn't throw and still produces a finale", async () => {
+    const { screen, shareText } = await runFinale((ws) => {
+      humanStart(ws)
+      setTimeout(() => {
+        ws.emitJson(snapWithYouSnake({ alive: 1, segments: [[2, 2]] })) // length 3, then vanish
+        ws.emitJson(snapWithNoSnakes([0, 1]))
+      }, 10)
+    })
+    expect(screen).toContain('alice won — press any key')
+    // Falls back to the last known pre-vanish length rather than crashing or reporting 0.
+    expect(shareText).toContain('length 3')
+    expect(shareText).not.toContain('length 0')
+  })
+})
+
 describe('resultLine names carry-item (unit)', () => {
   it('labels a non-you online winner by their StartMsg name when names are passed', async () => {
     const { resultLine } = await import('../src/game.js') // mock spreads importOriginal — real fn

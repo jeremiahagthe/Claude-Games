@@ -42,11 +42,29 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   // see. Declaring it here means onSnap always has a variable to assign into.
   let state: MatchState | null = null
 
+  // Hoisted for the same TDZ reason as `state` above: onSnap closes over both `you` and
+  // `lastLength` (Findings 2 & 3 — see below), and a coalesced start+snap chunk can reach
+  // onSnap before this function's own `await` continuation has assigned them. `you` starts at
+  // -1 (never a valid player id) so a pre-seed race snap's `.find` simply misses rather than
+  // matching the wrong slot; `lastLength` starts at 0 as the only honest value before any
+  // snap/mirror has told us anything about the player's snake.
+  let you = -1
+  let lastLength = 0
+
   let connected: Awaited<ReturnType<typeof SnakeNetClient.connect>>
   try {
     connected = await SnakeNetClient.connect(opts.server, joined.matchId, joined.token, name, {
       onSnap(wire) {
         state = fromWire(wire)
+        // Finding 2: the sim clears a dead snake's `cells` to `[]`, and by the final snap of a
+        // loss YOU are always dead (or, per Finding 3, possibly entirely absent from a
+        // short/hostile snakes array) — track the last-known-alive length here, on every snap,
+        // instead of reading it off the (possibly already-cleared) final state.
+        // Finding 3: look the snake up BY ID, not by array position — the wire validator admits
+        // `snakes.length` 0..4 with no id/slot guarantee, so `wire.snakes[you]` can be undefined
+        // on a hostile or buggy server's snap.
+        const mySnake = state.snakes.find((s) => s.id === you)
+        if (mySnake && mySnake.alive) lastLength = mySnake.cells.length
       },
       onEnd(result) {
         ended = result
@@ -60,7 +78,7 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   }
 
   const { client: net, start } = connected
-  const you = start.you
+  you = start.you
   // Seeds the local mirror deterministically from the SAME inputs the server used to create
   // its own tick-0 state — this is what's on screen for the handful of ticks before the
   // first `snap` arrives; every `snap` after that overwrites it outright. Also the point past
@@ -69,6 +87,10 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   // server's own tick-0 board either way — same precedence a `snap` always has over the local
   // mirror.
   state = createMatch(start.seed, start.names, start.bots)
+  {
+    const mySnake = state.snakes.find((s) => s.id === you)
+    if (mySnake && mySnake.alive) lastLength = mySnake.cells.length
+  }
 
   const session = await setupGame()
   let lastSentDir: Dir | null = null
@@ -144,7 +166,7 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
             finalResult,
             you,
             state!.tick,
-            state!.snakes[you]!.cells.length,
+            lastLength,
             start.names.filter((_, i) => i !== you).join(', '),
           ),
         }
