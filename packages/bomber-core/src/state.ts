@@ -14,7 +14,7 @@ export interface PlayerState {
   bombCap: number
   range: number
   speed: number // speed 0.. → stepTicks
-  dir: Dir | null // latched heading (null = standing)
+  dir: Dir | null // single-step buffer: consumed after each tile (null = standing)
   stepCooldown: number // ticks until next step allowed
   activeBombs: number
 }

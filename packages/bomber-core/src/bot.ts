@@ -4,10 +4,14 @@ import type { Bomb, BomberState, Cell, Dir, Input, PlayerState } from './state.j
 import { idx, stepTicks } from './state.js'
 
 export type Difficulty = 'easy' | 'normal' | 'hard'
-export interface BotMind { rng: () => number; nextDecisionTick: number } // per-bot, caller-owned
+// heading is the bot's OWN remembered movement direction. The sim now consumes
+// player.dir after every tile (tap-to-step), so a bot can no longer read its
+// heading back out of the state between decisions — it must re-issue heading
+// every tick to keep gliding, exactly as a human holding a key does.
+export interface BotMind { rng: () => number; nextDecisionTick: number; heading: Dir | null } // per-bot, caller-owned
 
 export function createBotMind(seed: number): BotMind {
-  return { rng: mulberry32(seed), nextDecisionTick: 0 }
+  return { rng: mulberry32(seed), nextDecisionTick: 0, heading: null }
 }
 
 const CADENCE: Record<Difficulty, number> = { easy: 10, normal: 5, hard: 3 }
@@ -403,19 +407,32 @@ function findApproachDir(
 }
 
 // Deterministic given (state, mind.rng state, d); mutates only mind (rng
-// advance on 'easy' mistake rolls, decision-cadence bookkeeping). Between
-// decision ticks it just resends the latched heading — movement is latched,
-// so holding steady requires no new direction.
+// advance on 'easy' mistake rolls, decision-cadence bookkeeping, and the
+// remembered heading). Between decision ticks it re-issues mind.heading —
+// under tap-to-step the sim consumes player.dir every tile, so the bot must
+// keep feeding its own heading to keep moving (a decision commits to a
+// heading for the whole cadence window; the ticks in between just repeat it).
 export function botDecide(state: BomberState, id: number, mind: BotMind, d: Difficulty): Input {
   const player = state.players[id]
-  if (!player || !player.alive) return { dir: null, bomb: false }
+  if (!player || !player.alive) {
+    mind.heading = null
+    return { dir: null, bomb: false }
+  }
 
   if (state.tick < mind.nextDecisionTick) {
-    return { dir: player.dir, bomb: false }
+    return { dir: mind.heading, bomb: false }
   }
   const cadence = CADENCE[d]
   mind.nextDecisionTick = state.tick + cadence
 
+  const decision = decide(state, player, mind, d, cadence)
+  mind.heading = decision.dir
+  return decision
+}
+
+// The actual per-decision logic, factored out so botDecide can record the
+// chosen heading in one place.
+function decide(state: BomberState, player: PlayerState, mind: BotMind, d: Difficulty, cadence: number): Input {
   const chainAware = d === 'hard'
   const skipDangerCheck = d === 'easy' && mind.rng() < EASY_MISTAKE_RATE
   const dmap = computeDangerMap(state, chainAware)

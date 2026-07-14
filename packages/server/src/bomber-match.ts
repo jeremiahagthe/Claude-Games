@@ -182,6 +182,13 @@ export class BomberMatchHost {
         continue
       }
       const latch = this.latches.get(id) ?? { dir: null, bomb: false }
+      // Tap-to-step lives in the shared sim: a present dir sets a single-step
+      // buffer that the sim consumes after one tile. The server feeds the latch
+      // as a present input every tick, so the client's explicit dir:null (sent
+      // the instant its one-shot latch releases) is an authoritative stop — the
+      // player halts immediately online with no leftover glide. (A mid-cooldown
+      // tap can be lost under latency; the offline path buffers it via an absent
+      // input, but online favours immediate, overshoot-free stops.)
       inputs.push({ dir: latch.dir, bomb: latch.bomb })
       // Bomb placement is a one-shot action per received InputMsg, not a held latch like dir:
       // consume it into exactly this tick's step() call, then clear it so it takes a fresh

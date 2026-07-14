@@ -13,24 +13,45 @@ const only = (i: Input): (Input | null)[] => [i, null, null, null]
 function clearArena(s: BomberState): BomberState {
   return { ...s, grid: s.grid.map(c => (c === 'soft' ? 'empty' : c)), hidden: s.hidden.map(() => null) }
 }
-function run(s: ReturnType<typeof createMatch>, inputs: (Input | null)[], n: number) {
+// tap once (dir on tick 0 only), then no further events for n-1 ticks
+function tapOnce(s: ReturnType<typeof createMatch>, inputs: (Input | null)[], n: number) {
   for (let k = 0; k < n; k++) s = step(s, k === 0 ? inputs : NOTHING)
+  return s
+}
+// hold a direction: re-issue the same press every tick (mirrors OS auto-repeat)
+function hold(s: ReturnType<typeof createMatch>, i: Input, n: number) {
+  for (let k = 0; k < n; k++) s = step(s, only(i))
   return s
 }
 
 describe('movement', () => {
-  it('latched dir steps once per stepTicks, keeps going without input', () => {
+  it('one tap steps exactly one tile, then stops (tap-to-step)', () => {
     let s = clearArena(createMatch(42, NAMES, BOTS))
-    s = run(s, only({ dir: 'right', bomb: false }), BASE_STEP_TICKS)
-    expect(s.players[0].x).toBe(2)                 // one step after cooldown
-    s = run(s, NOTHING, BASE_STEP_TICKS)
-    expect(s.players[0].x).toBe(3)                 // latch persists, no events
+    s = tapOnce(s, only({ dir: 'right', bomb: false }), BASE_STEP_TICKS)
+    expect(s.players[0].x).toBe(2)                 // moved one tile
+    expect(s.players[0].dir).toBeNull()            // heading consumed
+    s = tapOnce(s, NOTHING, BASE_STEP_TICKS * 2)
+    expect(s.players[0].x).toBe(2)                 // no more events → stays put
   })
-  it('{dir:null} stops; hard/soft/pillar tiles block; blocked step keeps latch', () => {
+  it('a tap made mid-cooldown is buffered, not lost', () => {
     let s = clearArena(createMatch(42, NAMES, BOTS))
-    s = run(s, only({ dir: 'up', bomb: false }), BASE_STEP_TICKS * 3)
-    expect(s.players[0].y).toBe(1)                 // wall at y=0 blocks
-    s = run(s, only({ dir: null, bomb: false }), BASE_STEP_TICKS)
+    s = step(s, only({ dir: 'right', bomb: false }))   // tick 0: steps immediately to x=2, cooldown set
+    expect(s.players[0].x).toBe(2)
+    // tap again one tick later, while still on cooldown — then no further events
+    s = step(s, only({ dir: 'right', bomb: false }))   // buffered (cooldown not elapsed)
+    for (let k = 0; k < BASE_STEP_TICKS; k++) s = step(s, NOTHING)
+    expect(s.players[0].x).toBe(3)                 // the buffered tap landed as one more tile
+  })
+  it('holding a direction glides continuously (hold-to-run)', () => {
+    let s = clearArena(createMatch(42, NAMES, BOTS))
+    s = hold(s, { dir: 'right', bomb: false }, BASE_STEP_TICKS * 3)
+    expect(s.players[0].x).toBeGreaterThanOrEqual(4) // several tiles while held
+  })
+  it('hard/soft/pillar tiles block; a blocked tap consumes the pulse', () => {
+    let s = clearArena(createMatch(42, NAMES, BOTS))
+    s = hold(s, { dir: 'up', bomb: false }, BASE_STEP_TICKS * 3)
+    expect(s.players[0].y).toBe(1)                 // wall at y=0 blocks the run
+    s = tapOnce(s, only({ dir: null, bomb: false }), BASE_STEP_TICKS)
     expect(s.players[0]).toMatchObject({ x: 1, y: 1, dir: null })
   })
   it('speed power-up shortens the cooldown with a floor', () => {

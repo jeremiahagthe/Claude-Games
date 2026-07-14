@@ -12,8 +12,8 @@ describe('createLatch', () => {
   })
 })
 
-describe('onKey — direction latch', () => {
-  it('a dir press latches that direction', () => {
+describe('onKey — direction pulse (tap-to-step)', () => {
+  it('a dir press requests a step that way', () => {
     expect(onKey(createLatch(), press('w')).dir).toBe('up')
     expect(onKey(createLatch(), press('a')).dir).toBe('left')
     expect(onKey(createLatch(), press('s')).dir).toBe('down')
@@ -24,61 +24,26 @@ describe('onKey — direction latch', () => {
     expect(onKey(createLatch(), press('right')).dir).toBe('right')
   })
 
-  it('same-direction repeat is a no-op (OS auto-repeat safe)', () => {
+  it('a same-direction repeat re-requests the step (hold-to-run, not a no-op)', () => {
     const l1 = onKey(createLatch(), press('w'))
     const l2 = onKey(l1, repeat('w'))
-    expect(l2).toEqual(l1)
-    expect(l2.dir).toBe('up')
+    expect(l2.dir).toBe('up') // still requesting up; the sim rate-limits the run
   })
 
-  it('same-direction press (indistinguishable-from-repeat legacy terminal) is also a no-op', () => {
-    const l1 = onKey(createLatch(), press('w'))
-    const l2 = onKey(l1, press('w'))
-    expect(l2).toEqual(l1)
+  it('the latest dir key wins — opposing or perpendicular both just switch', () => {
+    // opposing: up then down → now requesting down (no stop-first dance)
+    expect(onKey(onKey(createLatch(), press('w')), press('s')).dir).toBe('down')
+    // perpendicular: up then left → now requesting left
+    expect(onKey(onKey(createLatch(), press('w')), press('a')).dir).toBe('left')
   })
 
-  it('an opposing tap stops movement (stop-first)', () => {
-    const moving = onKey(createLatch(), press('w')) // up
-    const stopped = onKey(moving, press('s')) // down opposes up
-    expect(stopped.dir).toBeNull()
-  })
-
-  it('a second opposing tap reverses direction', () => {
-    let l = createLatch()
-    l = onKey(l, press('w')) // up
-    l = onKey(l, press('s')) // stop
-    expect(l.dir).toBeNull()
-    l = onKey(l, press('s')) // tap again: reverse into down
-    expect(l.dir).toBe('down')
-  })
-
-  it('opposing repeat also stops (repeat and press treated identically for dir keys)', () => {
-    const moving = onKey(createLatch(), press('right'))
-    const stopped = onKey(moving, repeat('left'))
-    expect(stopped.dir).toBeNull()
-  })
-
-  it('a perpendicular tap switches direction without stopping first', () => {
-    const movingUp = onKey(createLatch(), press('w')) // up
-    const movingLeft = onKey(movingUp, press('a')) // left is perpendicular to up
-    expect(movingLeft.dir).toBe('left')
-  })
-
-  it('left/right and up/down are the only opposing pairs (left/up are perpendicular)', () => {
-    const movingLeft = onKey(createLatch(), press('a'))
-    const afterUp = onKey(movingLeft, press('w'))
-    expect(afterUp.dir).toBe('up') // switch, not stop
-  })
-
-  it('release events are ignored — latch persists', () => {
-    const moving = onKey(createLatch(), press('w'))
-    const afterRelease = onKey(moving, release('w'))
-    expect(afterRelease).toEqual(moving)
-    expect(afterRelease.dir).toBe('up')
+  it('release events are ignored', () => {
+    const requested = onKey(createLatch(), press('w'))
+    const afterRelease = onKey(requested, release('w'))
+    expect(afterRelease).toEqual(requested)
 
     const idle = createLatch()
-    const stillIdle = onKey(idle, release('s'))
-    expect(stillIdle).toEqual(idle)
+    expect(onKey(idle, release('s'))).toEqual(idle)
   })
 })
 
@@ -101,7 +66,7 @@ describe('onKey — bomb queue', () => {
     expect(l.bombQueued).toBe(false)
   })
 
-  it('queuing a bomb does not disturb the current direction latch', () => {
+  it('queuing a bomb does not disturb a pending direction pulse', () => {
     const moving = onKey(createLatch(), press('d')) // right
     const withBomb = onKey(moving, press(' '))
     expect(withBomb.dir).toBe('right')
@@ -116,18 +81,18 @@ describe('drain', () => {
     expect(input).toEqual({ dir: 'up', bomb: true })
   })
 
-  it('clears bombQueued but keeps dir in the next state', () => {
+  it('clears BOTH dir and bombQueued in the next state (both are one-shot pulses)', () => {
     const l: LatchState = { dir: 'left', bombQueued: true }
     const { next } = drain(l)
-    expect(next).toEqual({ dir: 'left', bombQueued: false })
+    expect(next).toEqual({ dir: null, bombQueued: false })
   })
 
-  it('a no-bomb drain reports bomb:false and dir persists across repeated drains', () => {
-    const l: LatchState = { dir: 'down', bombQueued: false }
-    const first = drain(l)
+  it('a tap sends its dir exactly once — the next drain reports no direction', () => {
+    const tapped: LatchState = { dir: 'down', bombQueued: false }
+    const first = drain(tapped)
     expect(first.input).toEqual({ dir: 'down', bomb: false })
+    // no fresh key event arrived, so the pulse is spent
     const second = drain(first.next)
-    expect(second.input).toEqual({ dir: 'down', bomb: false })
-    expect(second.next).toEqual({ dir: 'down', bombQueued: false })
+    expect(second.input).toEqual({ dir: null, bomb: false })
   })
 })

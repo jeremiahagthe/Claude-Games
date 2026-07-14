@@ -37,7 +37,13 @@ export async function runOffline(opts: { difficulty: Difficulty; name: string; s
 
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
-      const yourInput = session.drainInput()
+      // A quiet tick (no key event, no queued bomb) passes a wholly-ABSENT input
+      // (null), which step()'s movementPhase reads as "keep the buffered tap"
+      // rather than an authoritative stop — that is what lets a single tap made
+      // mid-cooldown still land as exactly one tile. A real press or a queued
+      // bomb passes the present Input.
+      const drained = session.drainInput()
+      const yourInput = drained.dir === null && !drained.bomb ? null : drained
       const inputs = [
         yourInput,
         botDecide(state, 1, minds[0]!, opts.difficulty),

@@ -136,7 +136,7 @@ describe('BomberMatchHost', () => {
     expect(snap.state.tick).toBe(1)
   })
 
-  it('a client InputMsg updates that player\'s latch — dir is applied on the next tick, keep leaves it untouched, null clears it', () => {
+  it('a client InputMsg drives tap-to-step — a dir moves one tile then the buffer is consumed, keep re-buffers a held dir mid-cooldown, an explicit null stops', () => {
     const host = new BomberMatchHost(4)
     const conns = [conn(), conn(), conn(), conn()]
     const names = ['a', 'b', 'c', 'd']
@@ -144,28 +144,31 @@ describe('BomberMatchHost', () => {
 
     // player 0 spawns at (1,1); (2,1) is guaranteed clear (spawn-pocket tile, never a soft
     // block), so this single hop is deterministic regardless of the match's random seed.
+    // wire index 9 is the dir buffer (dirCode); index 10 is stepCooldown.
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
     host.tick()
     let snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
-    expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // x,y moved to (2,1)
-    expect(snap.state.players[0]![9]).toBe(4) // dirCode for 'right'
+    expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // moved one tile to (2,1)
+    expect(snap.state.players[0]![9]).toBe(0)  // buffer CONSUMED by the step (tap-to-step: one press → one tile)
+    expect(snap.state.players[0]![10]).toBeGreaterThan(0) // now mid-cooldown
 
-    // 'keep' must not clear the latched direction. Position is mid-cooldown either way (not
-    // asserted), so the latch itself (wire dirCode) is the only thing that distinguishes
-    // "kept" from "incorrectly cleared" here — and it's deterministic regardless of seed.
+    // 'keep' re-feeds the held direction. This tick is mid-cooldown so no move happens, but the
+    // buffer is set back to 'right' — proving 'keep' sustains a held direction (hold-to-run)
+    // rather than being dropped. Seed-independent (position unchanged either way).
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'keep', bomb: false }))
     host.tick()
     snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
-    expect(snap.state.players[0]![9]).toBe(4) // still latched right, not cleared by 'keep'
+    expect(snap.state.players[0]![9]).toBe(4) // dirCode 'right' — held direction re-buffered, not lost
 
-    // an explicit null clears the latch.
+    // an explicit null (the client's one-shot latch releasing) is an authoritative stop: the
+    // buffer is cleared this tick, so the player will not take another step.
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: null, bomb: false }))
     host.tick()
     snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
-    expect(snap.state.players[0]![9]).toBe(0) // cleared
+    expect(snap.state.players[0]![9]).toBe(0) // buffer cleared → standing still
   })
 
   it('a queued bomb is not dropped when a dir-change InputMsg lands in the same tick (unsynchronized 50ms client/server clocks can coalesce two client ticks into one server tick)', () => {
@@ -315,8 +318,11 @@ describe('BomberMatchHost', () => {
     expect(host.tick().type).toBe('running')
     const snap = lastMsg(cB)
     if (snap.t !== 'snap') throw new Error('expected snap')
-    expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // moved right
-    expect(snap.state.players[0]![9]).toBe(4) // dirCode 'right': B's latch, not a bot decision
+    // The rightward move to (2,1) is itself the proof B's latch drives slot 0 (a bot mind would
+    // pick its own direction). Under tap-to-step the dir buffer is consumed by that step, so the
+    // wire dir reads 0 afterward.
+    expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // B's 'right' moved slot 0
+    expect(snap.state.players[0]![9]).toBe(0) // buffer consumed by the step (tap-to-step)
   })
 
   it('hello A, hello B, A leaves, C hellos → no id collision; both live humans control distinct human slots', () => {

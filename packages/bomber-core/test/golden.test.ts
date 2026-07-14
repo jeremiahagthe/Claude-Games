@@ -17,6 +17,11 @@ const SCRIPT: Record<number, (Input | null)[]> = {
 }
 it('golden master: seed 7 + script → pinned state hash at tick 400', () => {
   let s = createMatch(7, ['a', 'b', 'c', 'd'], [false, false, false, false])
+  // The between-tick [null,null,null,null] rows are wholly-ABSENT inputs
+  // (keep-buffer), so under tap-to-step each scripted press moves exactly one
+  // tile and then the player stands — the sim's real single-tap behavior.
   for (let t = 0; t < 400; t++) s = step(s, SCRIPT[t] ?? [null, null, null, null])
-  expect(fnv1a(JSON.stringify(s))).toBe('4904a09a')  // recorded from an actual green run; re-record + note why on intended changes
+  // Re-recorded 2026-07-13 for the tap-to-step movement model (was 4904a09a
+  // under the old latched-glide sim). Re-record + note why on intended changes.
+  expect(fnv1a(JSON.stringify(s))).toBe('5ae355d6')
 })

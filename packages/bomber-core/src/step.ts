@@ -23,7 +23,24 @@ function isBlocked(state: BomberState, x: number, y: number): boolean {
   return false
 }
 
-// Movement phase: latched-direction grid stepping.
+// Movement phase: tap-to-step grid stepping. p.dir is a single-step BUFFER,
+// not a persistent latch, and the buffer is CONSUMED — set back to null — the
+// moment a step attempt fires (whether it moved or was blocked), so one press
+// yields at most one tile.
+//
+// The input each tick carries one of three meanings, which is why the two kinds
+// of "null" are deliberately distinct:
+//   • a present input with a non-null dir  → SET the buffer to that dir (a press)
+//   • a present input with dir === null    → CLEAR the buffer (an authoritative
+//       stop; this is how a bot stands still and how it halts the instant it
+//       decides to, with no leftover step)
+//   • NO input at all (inputs[i] == null)  → KEEP whatever is buffered (a human
+//       who simply isn't pressing a key this tick — so a tap made mid-cooldown
+//       survives until the step actually fires)
+// Continuous motion needs a fresh press every cooldown: a human holding the key
+// auto-repeats it, and a bot re-issues its remembered heading each tick. Bots
+// therefore always send a present input, making their movement identical to the
+// old latched sim; only the (input-absent) human path buffers across cooldown.
 function movementPhase(state: BomberState, inputs: (Input | null)[]): PlayerState[] {
   return state.players.map((p, i) => {
     const input = inputs[i] ?? null
@@ -36,6 +53,7 @@ function movementPhase(state: BomberState, inputs: (Input | null)[]): PlayerStat
     let cooldown = p.stepCooldown - 1
     let x = p.x
     let y = p.y
+    let nextDir = dir
 
     if (dir !== null && cooldown <= 0) {
       const target = targetTile(x, y, dir)
@@ -43,12 +61,14 @@ function movementPhase(state: BomberState, inputs: (Input | null)[]): PlayerStat
         x = target.x
         y = target.y
       }
-      // Blocked or not, the retry cadence resets on an expired cooldown.
+      // Blocked or not, the retry cadence resets and the buffer is consumed:
+      // one press yields at most one tile.
       cooldown = stepTicks(p.speed)
+      nextDir = null
     }
 
-    if (dir === p.dir && x === p.x && y === p.y && cooldown === p.stepCooldown) return p
-    return { ...p, dir, x, y, stepCooldown: cooldown }
+    if (nextDir === p.dir && x === p.x && y === p.y && cooldown === p.stepCooldown) return p
+    return { ...p, dir: nextDir, x, y, stepCooldown: cooldown }
   })
 }
 
