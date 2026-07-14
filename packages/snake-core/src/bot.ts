@@ -170,11 +170,20 @@ export function botDecide(state: MatchState, id: number, mind: BotMind, d: Diffi
   }
 
   // Step 6: fallback — surviving candidate with the largest space; else the unblocked
-  // candidate with the largest space; else ride it out.
+  // candidate with the largest space; else ride it out. The capped counts from step 2
+  // can tie at the cap when candidates' true reachable space both exceed it, so the
+  // comparison here uses EXACT (uncapped) flood-fill counts, recomputed only for the
+  // ≤3 pool candidates and only on decisions that actually reach this fallback.
   const pool = survivors.length > 0 ? survivors : unblocked
   let best = pool[0]!
-  for (const c of pool) {
-    if (c.space > best.space) best = c
+  let bestExact = floodFillCount(best.next, isBlocked, GRID_W * GRID_H)
+  for (let i = 1; i < pool.length; i++) {
+    const c = pool[i]!
+    const exact = floodFillCount(c.next, isBlocked, GRID_W * GRID_H)
+    if (exact > bestExact) {
+      best = c
+      bestExact = exact
+    }
   }
   return { dir: best.dir }
 }
