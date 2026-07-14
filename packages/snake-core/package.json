@@ -1,0 +1,11 @@
+{
+  "name": "snakewait-core",
+  "version": "0.0.0",
+  "description": "snakewait snake rules engine: grid, seeded layout, deterministic sim",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json" }
+}

@@ -1,0 +1,11 @@
+export const GRID_W = 56
+export const GRID_H = 40
+export const TICK_RATE = 20
+export const MAX_PLAYERS = 4
+export const START_LENGTH = 4
+export const SPAWN_INSET = 4
+export const FOOD_COUNT = 6
+export const GROWTH_PER_FOOD = 2
+export const SPEED_SCHEDULE: readonly [number, number][] = [[0, 4], [600, 3], [1200, 2]]
+export const SHRINK_START_TICK = 1800
+export const SHRINK_INTERVAL_TICKS = 40
