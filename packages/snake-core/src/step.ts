@@ -1,0 +1,198 @@
+import { GROWTH_PER_FOOD, GRID_H, GRID_W } from './constants.js'
+import { randStep } from './prng.js'
+import type { Cellxy, Dir, Food, Input, MatchState, Result, SnakeState } from './state.js'
+import { idx, isWall, stepTicksAt } from './state.js'
+
+const OPPOSITE: Record<Dir, Dir> = { up: 'down', down: 'up', left: 'right', right: 'left' }
+const DELTA: Record<Dir, Cellxy> = {
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+}
+
+const MAX_RESPAWN_ATTEMPTS = 200
+
+function stampResult(existing: Result | null, snakes: SnakeState[]): Result | null {
+  if (existing !== null) return existing
+  const alive = snakes.filter((s) => s.alive)
+  if (alive.length === 0) return { kind: 'draw' }
+  if (alive.length === 1) return { kind: 'win', winner: alive[0]!.id }
+  return null
+}
+
+export function step(state: MatchState, inputs: (Input | null)[]): MatchState {
+  const newTick = state.tick + 1
+
+  // Phase 1: inputs (every tick) — reject 180 reverse of last ACTUALLY MOVED heading (snake.dir)
+  const snakesAfterInput: SnakeState[] = state.snakes.map((snake, i) => {
+    if (!snake.alive) return snake
+    const dir = inputs[i]?.dir
+    if (dir != null && dir !== OPPOSITE[snake.dir]) {
+      return { ...snake, pendingDir: dir }
+    }
+    return snake
+  })
+
+  // Phase 2: cooldown
+  const newCooldown = state.stepCooldown - 1
+  if (newCooldown > 0) {
+    return {
+      ...state,
+      tick: newTick,
+      stepCooldown: newCooldown,
+      snakes: snakesAfterInput,
+      result: stampResult(state.result, snakesAfterInput),
+    }
+  }
+
+  // Phase 3: movement step — compute next head per alive snake, resolve the moved heading
+  const movement = snakesAfterInput.map((snake) => {
+    if (!snake.alive) return null
+    const dir = snake.pendingDir ?? snake.dir
+    const delta = DELTA[dir]
+    const head = snake.cells[0]!
+    const nextHead = { x: head.x + delta.x, y: head.y + delta.y }
+    return { snake, dir, head, nextHead }
+  })
+
+  // Phase 4: tails vacate — occupancy for collision = remaining body cells of ALL alive snakes
+  const vacated = snakesAfterInput.map((snake) => {
+    if (!snake.alive) return null
+    if (snake.growth > 0) {
+      return { bodyAfterVacate: snake.cells, growth: snake.growth - 1 }
+    }
+    return { bodyAfterVacate: snake.cells.slice(0, -1), growth: 0 }
+  })
+
+  const occupied = new Set<number>()
+  for (const v of vacated) {
+    if (!v) continue
+    for (const c of v.bodyAfterVacate) occupied.add(idx(c.x, c.y))
+  }
+
+  // Phase 5: deaths (simultaneous) — wall, body occupancy, shared target cell, head-swap
+  const aliveMovers = movement.filter((m): m is NonNullable<typeof m> => m !== null)
+  const headTargetCounts = new Map<number, number>()
+  for (const m of aliveMovers) {
+    const key = idx(m.nextHead.x, m.nextHead.y)
+    headTargetCounts.set(key, (headTargetCounts.get(key) ?? 0) + 1)
+  }
+
+  const deadIds = new Set<number>()
+  for (const m of aliveMovers) {
+    if (isWall(m.nextHead.x, m.nextHead.y, state.rings)) {
+      deadIds.add(m.snake.id)
+      continue
+    }
+    const key = idx(m.nextHead.x, m.nextHead.y)
+    if (occupied.has(key)) {
+      deadIds.add(m.snake.id)
+      continue
+    }
+    if ((headTargetCounts.get(key) ?? 0) > 1) {
+      deadIds.add(m.snake.id)
+    }
+  }
+  for (let i = 0; i < aliveMovers.length; i++) {
+    for (let j = i + 1; j < aliveMovers.length; j++) {
+      const a = aliveMovers[i]!
+      const b = aliveMovers[j]!
+      if (
+        a.nextHead.x === b.head.x &&
+        a.nextHead.y === b.head.y &&
+        b.nextHead.x === a.head.x &&
+        b.nextHead.y === a.head.y
+      ) {
+        deadIds.add(a.snake.id)
+        deadIds.add(b.snake.id)
+      }
+    }
+  }
+
+  // Build post-movement snakes: survivors get the new head prepended; snakes that died
+  // this tick keep their pre-tick body (never actually completed the move) for corpse
+  // conversion below, then get cleared to alive:false/cells:[].
+  let snakes: SnakeState[] = snakesAfterInput.map((snake, i) => {
+    const m = movement[i]
+    if (!m) return snake // already dead before this tick
+    if (deadIds.has(snake.id)) {
+      return { ...snake, alive: false, dir: m.dir, pendingDir: null, cells: [] }
+    }
+    const v = vacated[i]!
+    return {
+      ...snake,
+      alive: true,
+      dir: m.dir,
+      pendingDir: null,
+      cells: [m.nextHead, ...v.bodyAfterVacate],
+      growth: v.growth,
+    }
+  })
+
+  // Phase 6: food — surviving head on a food cell grows the snake and respawns one food
+  let food: Food[] = state.food.slice()
+  let rng = state.rng
+  for (let i = 0; i < snakes.length; i++) {
+    const snake = snakes[i]!
+    if (!snake.alive) continue
+    const head = snake.cells[0]!
+    const eatenIdx = food.findIndex((f) => f.x === head.x && f.y === head.y)
+    if (eatenIdx === -1) continue
+
+    food = food.slice(0, eatenIdx).concat(food.slice(eatenIdx + 1))
+    snakes = snakes.map((s) => (s.id === snake.id ? { ...s, growth: s.growth + GROWTH_PER_FOOD } : s))
+
+    const occupiedNow = new Set<number>()
+    for (const s of snakes) {
+      if (!s.alive) continue
+      for (const c of s.cells) occupiedNow.add(idx(c.x, c.y))
+    }
+    for (const f of food) occupiedNow.add(idx(f.x, f.y))
+
+    let placed = false
+    for (let attempt = 0; attempt < MAX_RESPAWN_ATTEMPTS && !placed; attempt++) {
+      const xStep = randStep(rng)
+      rng = xStep.next
+      const x = Math.floor(xStep.value * GRID_W)
+      const yStep = randStep(rng)
+      rng = yStep.next
+      const y = Math.floor(yStep.value * GRID_H)
+
+      const cellIdx = idx(x, y)
+      if (isWall(x, y, state.rings) || occupiedNow.has(cellIdx)) continue
+      food = [...food, { x, y }]
+      placed = true
+    }
+    // 200 re-rolls exhausted (field effectively full): skip silently, no food added.
+  }
+
+  // Phase 7: corpse-food — snakes that died THIS tick convert even-indexed pre-tick body
+  // cells to food (skipping walls/existing food); corpse cells become [].
+  for (let i = 0; i < snakesAfterInput.length; i++) {
+    const snake = snakesAfterInput[i]!
+    if (!deadIds.has(snake.id)) continue
+    const foodSet = new Set(food.map((f) => idx(f.x, f.y)))
+    for (let ci = 0; ci < snake.cells.length; ci += 2) {
+      const c = snake.cells[ci]!
+      if (isWall(c.x, c.y, state.rings)) continue
+      const cIdx = idx(c.x, c.y)
+      if (foodSet.has(cIdx)) continue
+      food.push(c)
+      foodSet.add(cIdx)
+    }
+  }
+
+  // Phase 8: result stamp (set once)
+  const result = stampResult(state.result, snakes)
+
+  return {
+    ...state,
+    tick: newTick,
+    stepCooldown: stepTicksAt(newTick),
+    rng,
+    snakes,
+    food,
+    result,
+  }
+}
