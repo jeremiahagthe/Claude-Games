@@ -139,6 +139,43 @@ Worker deployment as fragwait's deathmatch and checkwait's matchmaking).
 | `Q` / `Esc` | Quit (requires a second press to confirm) |
 | `Ctrl-C` | Quit instantly |
 
+## snakewait — terminal snake battle
+
+**Game 4: snakewait** — 4-snake last-alive-wins battle on a 56×40 grid.
+Snakes never stop moving; `wasd`/arrow keys just steer, and a 180° reversal
+into your own neck is ignored. Snakes that die decay into food on the spot,
+so the board keeps feeding the survivors. A sudden-death wall shrink starts
+closing the arena in from the edges at 90s and advances every 2s after that,
+guaranteeing every match ends by 130s so a game always fits inside a Claude
+turn. Online PvP via matchmaking by default — the lobby gathers players for
+~10s and bots always backfill any empty slots, so a match is never short of
+four players. Offline play drops you straight into a match against 3 bots
+instead.
+
+### Standalone play
+
+```
+npx -y snakewait
+```
+
+Add `--offline` to skip matchmaking and play a local match against 3 bots
+only, `--difficulty easy|normal|hard` to tune the bots (default `easy`),
+`--name <handle>` to set your display name, and `--server <url>` to point at
+a self-hosted worker (snakewait's matchmaking shares the same Cloudflare
+Worker deployment as fragwait's deathmatch, checkwait's matchmaking, and
+boomwait's matchmaking).
+
+snakewait needs an 80×24 terminal at minimum — below that there's no room to
+draw a frame.
+
+### snakewait controls
+
+| Input | Action |
+|---|---|
+| `W`/`↑`, `A`/`←`, `S`/`↓`, `D`/`→` | Steer (the snake never stops moving; a 180° reversal into your own neck is ignored) |
+| `Q` / `Esc` | Quit (requires a second press to confirm) |
+| `Ctrl-C` | Quit instantly |
+
 ## How the Claude integration works
 
 `/games` is user-invoked only (`disable-model-invocation: true` — Claude
