@@ -148,11 +148,12 @@ interface PixelToken {
   bg: Rgb | null // bottom pixel color
 }
 
-// The drawn frame border is deliberately uncolored (default terminal fg) —
-// it never needs an escape at all (unlike in-arena closed-ring wall cells,
-// which DO carry WALL_RGB per spec), which keeps every border-only row
-// escape-free and comfortably inside the 80-col budget.
-const BORDER_TOKEN: PixelToken = { glyph: WALL_GLYPH, fg: null, bg: null }
+// The drawn frame border carries WALL_RGB — the brief's "closed rings = the
+// border color" means the in-arena ring cells REUSE this color, so the border
+// itself must be painted with it (dim neutral, consistent with
+// bomber-client's wall palette). Mono stays escape-free: composeLine's mono
+// branch renders glyphs only and never reads fg/bg.
+const BORDER_TOKEN: PixelToken = { glyph: WALL_GLYPH, fg: WALL_RGB, bg: null }
 
 // One half-block char per (top, bottom) logical-pixel pair. Mono has no
 // concept of stacked fg/bg, so it picks whichever of the pair carries content
@@ -339,9 +340,11 @@ export function renderFrame(state: MatchState, you: number, layout: Layout, stat
 
 // Right HUD sidebar: hudText arrives already budgeted to exactly HUD_WIDTH
 // visible columns (see buildHudRows/playerHudLine/padPlain) — appended
-// directly after the border/arena content with NO separator (58 + 22 = 80
-// at k=1, the exact frame-fit budget), then trailing whitespace trimmed
-// (safe: only ever shortens the line, never grows it past budget).
+// directly after the border/arena content with NO separator, so every
+// composed line is structurally exactly (GRID_W*k + 2) + HUD_WIDTH visible
+// columns (58 + 22 = 80 at k=1). No trailing trim: the plan mandates the HUD
+// pads every line to exactly 80 visible cols, and both halves are built to
+// fixed visible widths, so simple concatenation IS the padding contract.
 function padHud(border: string, hudText: string): string {
-  return `${border}${hudText}`.replace(/\s+$/, '')
+  return `${border}${hudText}`
 }

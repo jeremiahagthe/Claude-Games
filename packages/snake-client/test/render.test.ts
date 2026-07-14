@@ -18,8 +18,22 @@ describe('the 80x24 gate (asserted, never eyeballed)', () => {
     const lines = frame.split('\n')
     expect(lines.length).toBeLessThanOrEqual(23)
     for (const line of lines) {
-      const visible = line.replace(/\[[0-9;]*m/g, '')
+      // The plan's pinned literal was /\[[0-9;]*m/g, which omits the leading
+      // \x1b ESC byte and thus counts one phantom column per SGR escape. The
+      // SEMANTICS (true visible width after stripping complete escape
+      // sequences) are the pin, not the defective literal — corrected here.
+      const visible = line.replace(/\x1b\[[0-9;]*m/g, '')
       expect(visible.length, JSON.stringify(visible)).toBeLessThanOrEqual(80)
+    }
+    // Padding contract (stronger than the ≤80 gate): the HUD pads every
+    // border+arena row to EXACTLY 80 visible cols — that's all 22 rows before
+    // the status line (top border, 20 arena rows, bottom border; the HUD
+    // sidebar spans the full bordered block). The status row is a
+    // caller-supplied string only slice-capped by the renderer, so it stays
+    // ≤80, not exactly 80.
+    for (let i = 0; i < lines.length - 1; i++) {
+      const visible = lines[i]!.replace(/\x1b\[[0-9;]*m/g, '')
+      expect(visible.length, `row ${i}: ${JSON.stringify(visible)}`).toBe(80)
     }
     expect(lines.some((l) => l.includes('jeremiah'))).toBe(true)
   })
