@@ -1,0 +1,11 @@
+{
+  "name": "blockwait-core",
+  "version": "0.0.0",
+  "description": "blockwait block-stacking rules engine: pieces, SRS rotation, state, deterministic sim",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json" }
+}
