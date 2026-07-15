@@ -42,11 +42,11 @@ export function tooSmallScreen(cols: number, rows: number): string {
   for (let i = 0; i < top; i++) lines.push('')
   lines.push(' '.repeat(left) + msg)
   // Same cursor-positioning framing as renderFrame (see there for the
-  // scroll-bug root cause): ESC[H repaints from the top-left instead of
-  // scrolling, per-line ESC[K clears resize residue, trailing ESC[J clears
-  // residue below. Plain text only — no SGR is ever emitted here, so unlike
-  // renderFrame there is no RESET to trail.
-  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + `${ESC}[J`
+  // scroll-bug and column-80 erase root causes): ESC[H repaints from the
+  // top-left instead of scrolling, leading-of-line ESC[K clears resize
+  // residue, trailing ESC[J clears residue below. Plain text only — no SGR
+  // is ever emitted here, so unlike renderFrame there is no RESET to trail.
+  return `${ESC}[H${ESC}[K` + lines.join(`\r\n${ESC}[K`) + `${ESC}[J`
 }
 
 // --- colors ----------------------------------------------------------------
@@ -348,18 +348,30 @@ export function renderFrame(state: MatchState, you: number, layout: Layout, stat
   // status row
   lines.push(statusLine.slice(0, charCols + 2 + HUD_WIDTH))
 
-  // Per-line clear-to-EOL (ESC[K) kills resize residue to the right of every
-  // line (checkwait/chess-4 lesson, see bomber-client's renderFrame); leading
-  // ESC[H repaints from the top-left every frame instead of scrolling, and
-  // trailing ESC[J kills residue below — the renderer never scrolls, so both
-  // are always safe. composeLine already RESETs at the end of any border/
-  // arena row that ended in a non-default color (see composeLine above), so
-  // this trailing RESET is a final belt-and-suspenders guarantee that the
-  // whole frame — including the caller-supplied statusLine — hands the
-  // terminal back in a default color state; matches bomber-client's tail
-  // exactly. Mono frames carry no SGR at all, so there is nothing to reset.
+  // Clear-to-EOL (ESC[K) kills resize residue to the right of every line
+  // (checkwait/chess-4 lesson, see bomber-client's renderFrame) — but it sits
+  // at the START of each line, not the end. A trailing ESC[K was tried first
+  // and found defective: frame lines are exactly 80 visible columns, and on
+  // an exactly-80-column terminal (this game's canonical size) writing
+  // column 80 leaves the cursor in the VT pending-wrap state AT column 80
+  // rather than past it; a trailing ESC[K from there erases from the active
+  // position INCLUSIVE, deleting the line's own just-written 80th column
+  // (visible symptom: the HUD hint's trailing "s" got eaten). A leading
+  // ESC[K erases the row before its content is written, so residue-to-the-
+  // right is still killed on wider terminals, but the erase can never
+  // interact with the pending-wrap state a full-width line leaves behind.
+  // This deliberately deviates from bomber-client's trailing-K pattern —
+  // bomber has the same latent defect, noted in the ledger but not fixed
+  // there (bomber is frozen). Leading ESC[H repaints from the top-left every
+  // frame instead of scrolling, and trailing ESC[J kills residue below — the
+  // renderer never scrolls, so both are always safe. composeLine already
+  // RESETs at the end of any border/arena row that ended in a non-default
+  // color (see composeLine above), so this trailing RESET is a final belt-
+  // and-suspenders guarantee that the whole frame — including the caller-
+  // supplied statusLine — hands the terminal back in a default color state.
+  // Mono frames carry no SGR at all, so there is nothing to reset.
   const tail = mode === 'mono' ? '' : RESET
-  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + tail + `${ESC}[J`
+  return `${ESC}[H${ESC}[K` + lines.join(`\r\n${ESC}[K`) + tail + `${ESC}[J`
 }
 
 // Right HUD sidebar: hudText arrives already budgeted to exactly HUD_WIDTH

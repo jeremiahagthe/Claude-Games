@@ -5,18 +5,24 @@ import { chooseLayout, renderFrame, tooSmallScreen } from '../src/render.js'
 
 const ESC = '\x1b'
 // The line separator renderFrame/tooSmallScreen now use instead of a bare
-// '\n' (feel-gate fix: ESC[K clears resize residue to the right of every
-// line so repaints never scroll).
-const FRAME_SEP = `${ESC}[K\r\n`
+// '\n' (feel-gate fix round 2: ESC[K moved to the START of each line instead
+// of the end. Root cause of the round-1 defect: a trailing ESC[K after an
+// exactly-80-visible-column line lands on a terminal that is exactly 80
+// columns wide with the cursor in the pending-wrap state at column 80 — the
+// erase-to-EOL from THAT position deletes the line's own just-written last
+// character. A leading ESC[K erases the row before any content lands, so it
+// still kills resize residue to the right on wider terminals, but can never
+// interact with the pending-wrap state a full-width line leaves behind).
+const FRAME_SEP = `\r\n${ESC}[K`
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '')
 
-// Strips the frame-level positioning wrapper (leading ESC[H, trailing
+// Strips the frame-level positioning wrapper (leading ESC[H ESC[K, trailing
 // optional RESET + ESC[J) added by the feel-gate fix, then splits on the new
-// ESC[K\r\n line separator — giving back the same logical line list the
+// \r\n ESC[K line separator — giving back the same logical line list the
 // pre-fix tests pinned via `frame.split('\n')`.
 function frameLines(frame: string): string[] {
-  const body = frame.replace(/^\x1b\[H/, '').replace(/(\x1b\[0m)?\x1b\[J$/, '')
+  const body = frame.replace(/^\x1b\[H\x1b\[K/, '').replace(/(\x1b\[0m)?\x1b\[J$/, '')
   return body.split(FRAME_SEP)
 }
 
@@ -134,22 +140,34 @@ describe('tooSmallScreen', () => {
   })
 })
 
-// Feel-gate fix: the renderer scrolled the terminal because renderFrame ended
-// with a bare `lines.join('\n')` — no cursor-positioning escapes, so every
-// 50ms paint appended fresh rows below the previous frame instead of
-// repainting in place. Pin the raw (pre-strip) escape framing directly,
-// mirroring bomber-client's renderFrame contract (packages/bomber-client/src/render.ts:329-334).
-describe('frame repaints in place (feel-gate: no terminal scroll)', () => {
+// Feel-gate fix round 1: the renderer scrolled the terminal because
+// renderFrame ended with a bare `lines.join('\n')` — no cursor-positioning
+// escapes, so every 50ms paint appended fresh rows below the previous frame
+// instead of repainting in place. That fix trailed each line with ESC[K,
+// which round 2 found defective: on an exactly-80-column terminal (this
+// game's canonical size), writing a full 80-visible-column line leaves the
+// cursor in the VT pending-wrap state at column 80, and a trailing ESC[K from
+// there erases from the active position INCLUSIVE — deleting the line's own
+// just-written 80th column (visible symptom: the HUD hint's trailing "s" was
+// eaten). Round 2 moves the clear-to-EOL to the START of each line instead:
+// a leading ESC[K erases the row before its content is written, so it still
+// kills resize residue to the right on wider terminals, but can never
+// interact with the pending-wrap state a full-width line leaves at column 80.
+// Pin the raw (pre-strip) escape framing directly, mirroring bomber-client's
+// renderFrame contract (packages/bomber-client/src/render.ts:329-334) — note
+// bomber-client still uses the trailing-K pattern and carries the same latent
+// defect; it is frozen and intentionally not fixed here (see ledger).
+describe('frame repaints in place (feel-gate: no terminal scroll, no column-80 erase)', () => {
   const layout = chooseLayout(80, 24)!
 
-  it('renderFrame: starts with ESC[H, lines joined by ESC[K\\r\\n, ends with ESC[J', () => {
+  it('renderFrame: starts with ESC[H ESC[K, lines joined by \\r\\n ESC[K, ends with ESC[J', () => {
     const s = baseMatch()
     const frame = renderFrame(s, 0, layout, 'status', 'truecolor')
-    expect(frame.startsWith(`${ESC}[H`)).toBe(true)
+    expect(frame.startsWith(`${ESC}[H${ESC}[K`)).toBe(true)
     expect(frame.endsWith(`${ESC}[J`)).toBe(true)
     expect(frame).toContain(FRAME_SEP)
-    // Every line boundary uses ESC[K\r\n, never a bare '\n' — a lone '\n' not
-    // preceded by ESC[K\r would mean a line broke without clearing to EOL.
+    // Every line boundary uses \r\n ESC[K, never a bare '\n' — a lone '\n' not
+    // followed by ESC[K would mean a line broke without clearing to EOL.
     const withoutSep = frame.split(FRAME_SEP).join('')
     expect(withoutSep.includes('\n')).toBe(false)
   })
@@ -161,9 +179,9 @@ describe('frame repaints in place (feel-gate: no terminal scroll)', () => {
     expect(frame.endsWith(`${ESC}[0m${ESC}[J`)).toBe(false)
   })
 
-  it('tooSmallScreen: starts with ESC[H, lines joined by ESC[K\\r\\n, ends with ESC[J, no RESET (plain text)', () => {
+  it('tooSmallScreen: starts with ESC[H ESC[K, lines joined by \\r\\n ESC[K, ends with ESC[J, no RESET (plain text)', () => {
     const msg = tooSmallScreen(40, 10)
-    expect(msg.startsWith(`${ESC}[H`)).toBe(true)
+    expect(msg.startsWith(`${ESC}[H${ESC}[K`)).toBe(true)
     expect(msg.endsWith(`${ESC}[J`)).toBe(true)
     expect(msg.endsWith(`${ESC}[0m${ESC}[J`)).toBe(false)
     expect(msg).toContain(FRAME_SEP)
