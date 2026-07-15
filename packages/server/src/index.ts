@@ -2,6 +2,7 @@ import { route } from './router.js'
 import { parseChessMatchId } from './chess-match.js'
 import { parseBomberMatchId } from './bomber-match.js'
 import { parseSnakeMatchId } from './snake-match.js'
+import { parseBlockMatchId } from './block-match.js'
 
 export interface Env {
   MATCH: DurableObjectNamespace
@@ -12,6 +13,8 @@ export interface Env {
   BOMBER_MATCH: DurableObjectNamespace
   SNAKE_LOBBY: DurableObjectNamespace
   SNAKE_MATCH: DurableObjectNamespace
+  BLOCK_LOBBY: DurableObjectNamespace
+  BLOCK_MATCH: DurableObjectNamespace
 }
 
 export default {
@@ -47,6 +50,15 @@ export default {
       return env.SNAKE_MATCH.get(env.SNAKE_MATCH.idFromString(snakeMatchId)).fetch(req)
     }
 
+    // Block routes: same shape as snake's/bomber's/chess's, kept outside the shared router.
+    if (url.pathname === '/block/join' && req.method === 'POST') {
+      return env.BLOCK_LOBBY.get(env.BLOCK_LOBBY.idFromName('block')).fetch(req)
+    }
+    const blockMatchId = parseBlockMatchId(url.pathname)
+    if (blockMatchId && req.method === 'GET') {
+      return env.BLOCK_MATCH.get(env.BLOCK_MATCH.idFromString(blockMatchId)).fetch(req)
+    }
+
     const r = route(url.pathname, req.method)
     if (!r) return new Response('not found', { status: 404 })
     if (r.kind === 'health') return new Response('fragwait-server ok')
@@ -66,3 +78,5 @@ export { BomberLobbyDO } from './bomber-lobby.js'
 export { BomberMatchDO } from './bomber-match.js'
 export { SnakeLobbyDO } from './snake-lobby.js'
 export { SnakeMatchDO } from './snake-match.js'
+export { BlockLobbyDO } from './block-lobby.js'
+export { BlockMatchDO } from './block-match.js'
