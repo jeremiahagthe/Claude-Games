@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createMatch, GARBAGE, bIdx } from 'blockwait-core'
+import { createMatch, GARBAGE, SHAPES, bIdx } from 'blockwait-core'
 import type { ActivePiece } from 'blockwait-core'
 import { chooseLayout, ghostY, renderFrame, tooSmallScreen } from '../src/render.js'
 
@@ -77,5 +77,56 @@ describe('additional render pins', () => {
     const piece: ActivePiece = { kind: 'T', rot: 0, x: 3, y: 2 }
     const y = ghostY(board, piece)
     expect(y).toBe(21)
+  })
+})
+
+describe('review fix round pins', () => {
+  it('names are sanitized at render time — wide/CJK names cannot break the exact-80 pin', () => {
+    // sanitizeHandle strips everything outside [a-z0-9-] and falls back to
+    // 'anon' — so a fully-wide name must render as 'anon' and every line
+    // must still measure exactly 80 visible cols (padHudText slices by
+    // .length, which would silently mis-measure wide codepoints).
+    const m = createMatch(7, ['日本語テスト名前が長い', 'rival'], [false, true])
+    const frame = renderFrame(m, 0, chooseLayout(80, 24)!, 's', 'truecolor')
+    const lines = frameLines(frame)
+    expect(lines.length).toBe(23)
+    for (const l of lines) expect(l.length, JSON.stringify(l)).toBe(80)
+    expect(lines.some((l) => l.includes('anon'))).toBe(true)
+    expect(lines.some((l) => l.includes('日本語'))).toBe(false)
+  })
+  it('next-piece mini is a real 4x2-cell rot-0 shape spanning two HUD rows', () => {
+    const m = createMatch(7, ['jeremiah', 'rival'], [false, true])
+    const kind = m.players[0]!.queue[0]!
+    const glyph = kind + kind // mono glyph = doubled kind letter
+    const mono = renderFrame(m, 0, chooseLayout(80, 24)!, 's', 'mono')
+    const lines = frameLines(mono)
+    // First next-mini occupies HUD rows 8 and 9 (frame lines 8/9, cols 22-57).
+    for (const gridRow of [0, 1]) {
+      const hudSlice = lines[8 + gridRow]!.slice(22, 58)
+      const expected = SHAPES[kind].filter(([, y]) => y === gridRow).length
+      const got = (hudSlice.match(new RegExp(glyph, 'g')) ?? []).length
+      expect(got, `mini grid row ${gridRow}: ${JSON.stringify(hudSlice)}`).toBe(expected)
+    }
+    // Colored modes carry the piece's color on the mini rows.
+    const tc = renderFrame(m, 0, chooseLayout(80, 24)!, 's', 'truecolor')
+    const tcLines = tc.replace(/\x1b\[[HKJ]/g, '').split('\r\n')
+    const miniPair = `${tcLines[8]}${tcLines[9]}`
+    expect(miniPair.includes('38;2;')).toBe(true)
+    expect(miniPair.includes(glyph)).toBe(true)
+  })
+  it('oversized terminal (120x30): frame centered — 3 leading blank lines, every content line 80+20 pad', () => {
+    const m = createMatch(7, ['jeremiah', 'rival'], [false, true])
+    const layout = chooseLayout(120, 30)!
+    const frame = renderFrame(m, 0, layout, 'status', 'truecolor')
+    expect(frame.startsWith('\x1b[H\x1b[K')).toBe(true)
+    expect(frame.endsWith('\x1b[J')).toBe(true)
+    const lines = frameLines(frame)
+    expect(lines.length).toBe(26) // 3 blank + 23 content
+    for (let i = 0; i < 3; i++) expect(lines[i]).toBe('')
+    for (let i = 3; i < 26; i++) {
+      const l = lines[i]!
+      expect(l.length, `line ${i}: ${JSON.stringify(l)}`).toBe(100)
+      expect(l.startsWith(' '.repeat(20))).toBe(true)
+    }
   })
 })

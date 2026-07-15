@@ -1,11 +1,22 @@
 import type { ActivePiece, MatchState, PlayerState } from 'blockwait-core'
-import { GARBAGE, KINDS, TICK_RATE, SUDDEN_DEATH_TICK, bIdx, cellsAt, collides } from 'blockwait-core'
+import {
+  GARBAGE,
+  GRAVITY_SCHEDULE,
+  KINDS,
+  SHAPES,
+  SUDDEN_DEATH_TICK,
+  TICK_RATE,
+  bIdx,
+  cellsAt,
+  collides,
+  sanitizeHandle,
+} from 'blockwait-core'
 import type { ColorMode } from 'termwait'
 
-// v1 is k=1 only — no scaling, no centering pad applied yet. Layout carries
-// cols/rows so a future revision can center an oversized terminal's fixed
-// 80x23 frame; that centering is not implemented here (not exercised by any
-// pinned test), only the >=80x24 admission gate is.
+// v1 is k=1 only — no scaling. Layout carries cols/rows so renderFrame can
+// center the fixed 80x23 frame inside an oversized terminal (left pad +
+// leading blank lines); at exactly 80x24 the padding is zero and output is
+// byte-identical to the unpadded frame.
 export interface Layout {
   cols: number
   rows: number
@@ -184,16 +195,25 @@ function fmtClock(tick: number): string {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
-// A "4x2-cell" mini is two cells wide (4 chars); the HUD only has room for a
-// single-row summary glyph pair per hold/preview slot in v1. Plain glyph
-// text only (no escapes) — HUD lines are built as fixed-width plain text
-// FIRST and colorized as a whole afterward (see colorizeLine), because
+// A 4x2-cell mini: the piece's rotation-0 shape drawn in a 4-wide × 2-tall
+// cell grid, 2 chars per cell = two 8-char rows. Every rot-0 shape fits: I
+// spans 4x2 (bottom row only), everything else 3x2 or 2x2. Plain glyph text
+// only (no escapes) — HUD lines are built as fixed-width plain text FIRST
+// and colorized as a whole afterward (see colorizeLine), because
 // padHudText/centerHudText do raw (escape-blind) length slicing/padding —
 // embedding escapes before that point corrupts them mid-sequence.
-function miniGlyph(kind: PieceKind | null): string {
-  if (!kind) return EMPTY_GLYPH.repeat(2)
-  const g = MONO_GLYPH[kind]
-  return g + g
+const MINI_W = 4
+const MINI_H = 2
+
+function miniRows(kind: PieceKind): [string, string] {
+  const cells = new Set(SHAPES[kind].map(([x, y]) => y * MINI_W + x))
+  const rows: string[] = []
+  for (let y = 0; y < MINI_H; y++) {
+    let row = ''
+    for (let x = 0; x < MINI_W; x++) row += cells.has(y * MINI_W + x) ? MONO_GLYPH[kind] : EMPTY_GLYPH
+    rows.push(row)
+  }
+  return [rows[0]!, rows[1]!]
 }
 
 // Wraps an already-padded, escape-free HUD line in a single color escape —
@@ -204,13 +224,14 @@ function colorizeLine(paddedPlain: string, mode: ColorMode, rgb: Rgb, idx256: nu
   return `${ESC}[38;5;${idx256}m${paddedPlain}${RESET}`
 }
 
+// Ordinal gravity tier for HUD display (1 = slowest/starting tier), derived
+// directly from block-core's GRAVITY_SCHEDULE thresholds.
 function gravityLevel(tick: number): number {
-  // Mirrors block-core's GRAVITY_SCHEDULE thresholds — a simple ordinal level
-  // number for HUD display (1 = slowest/starting tier).
-  const thresholds = [0, 400, 800, 1200, 1600, 2000, 2400]
   let level = 1
-  for (const t of thresholds) if (tick >= t) level++
-  return level - 1 || 1
+  GRAVITY_SCHEDULE.forEach(([fromTick], i) => {
+    if (tick >= fromTick) level = i + 1
+  })
+  return level
 }
 
 function buildHudLines(state: MatchState, you: number, mode: ColorMode): string[] {
@@ -218,28 +239,35 @@ function buildHudLines(state: MatchState, you: number, mode: ColorMode): string[
   const me = state.players[you]!
   const opp = state.players[you === 0 ? 1 : 0]!
 
+  // Emits a 2-row 4x2-cell mini at hud rows [row, row+1] — plain fixed-width
+  // text first, whole-line colorize after (see miniRows/colorizeLine).
+  const putMini = (row: number, kind: PieceKind): void => {
+    const [top, bot] = miniRows(kind)
+    hud[row] = colorizeLine(padHudText(`  ${top}`), mode, KIND_RGB[kind], KIND_256[kind])
+    hud[row + 1] = colorizeLine(padHudText(`  ${bot}`), mode, KIND_RGB[kind], KIND_256[kind])
+  }
+
   hud[0] = centerHudText('BLOCKWAIT')
-  hud[1] = padHudText(`▸${me.name}${me.alive ? '' : ' †'}`)
-  hud[2] = padHudText(` ${opp.name}${opp.alive ? '' : ' †'}`)
-  const holdPlain = padHudText(`hold: ${me.hold ? miniGlyph(me.hold) : '--'}`)
-  hud[4] = me.hold ? colorizeLine(holdPlain, mode, KIND_RGB[me.hold], KIND_256[me.hold]) : holdPlain
-  hud[6] = padHudText('next:')
+  hud[1] = padHudText(`▸${sanitizeHandle(me.name)}${me.alive ? '' : ' †'}`)
+  hud[2] = padHudText(` ${sanitizeHandle(opp.name)}${opp.alive ? '' : ' †'}`)
+  hud[4] = padHudText('hold:')
+  if (me.hold) putMini(5, me.hold)
+  else hud[5] = padHudText('  --')
+  hud[7] = padHudText('next:')
   const previews = me.queue.slice(0, 3)
   for (let i = 0; i < 3; i++) {
     const p = previews[i]
-    if (!p) continue
-    const plain = padHudText(`  ${miniGlyph(p)}`)
-    hud[7 + i] = colorizeLine(plain, mode, KIND_RGB[p], KIND_256[p])
+    if (p) putMini(8 + i * 2, p)
   }
 
   const incoming = me.pendingGarbage.reduce((sum, g) => sum + g.rows, 0)
   const incomingText = padHudText(`incoming: ${incoming}`)
-  hud[11] = mode !== 'mono' && incoming > 0 ? `${ESC}[31m${incomingText}${RESET}` : incomingText
+  hud[15] = mode !== 'mono' && incoming > 0 ? `${ESC}[31m${incomingText}${RESET}` : incomingText
 
-  hud[12] = padHudText(`lines: ${me.linesCleared}  sent: ${me.linesSent}`)
-  hud[13] = padHudText(`clock ${fmtClock(me.tick)}`)
-  hud[14] = padHudText(`gravity Lv ${gravityLevel(me.tick)}`)
-  hud[15] = padHudText(me.tick >= SUDDEN_DEATH_TICK ? 'SUDDEN DEATH' : '')
+  hud[16] = padHudText(`lines: ${me.linesCleared}  sent: ${me.linesSent}`)
+  hud[17] = padHudText(`clock ${fmtClock(me.tick)}`)
+  hud[18] = padHudText(`gravity Lv ${gravityLevel(me.tick)}`)
+  hud[19] = padHudText(me.tick >= SUDDEN_DEATH_TICK ? 'SUDDEN DEATH' : '')
 
   hud[HUD_ROWS - 1] = padHudText('←→ move ↓ soft ↑ rot space drop c hold')
 
@@ -252,17 +280,27 @@ function padStatusLine(statusLine: string): string {
   return statusLine.length > 80 ? statusLine.slice(0, 80) : statusLine.padEnd(80)
 }
 
-export function renderFrame(state: MatchState, you: number, _layout: Layout, statusLine: string, mode: ColorMode): string {
+export function renderFrame(state: MatchState, you: number, layout: Layout, statusLine: string, mode: ColorMode): string {
   const opp = you === 0 ? 1 : 0
   const meLines = boardLines(state.players[you]!, mode)
   const oppLines = boardLines(state.players[opp]!, mode)
   const hudLines = buildHudLines(state, you, mode)
 
+  // Centering pad for oversized terminals: floor((cols-80)/2) spaces before
+  // each content line and floor((rows-23)/2) blank leading lines. Both are
+  // zero at exactly 80x24, leaving the canonical frame byte-identical. The
+  // pad is applied to the line CONTENT (i.e. after each per-line ESC[K from
+  // the join below), so clear-to-EOL still erases the full physical row
+  // before any padding or content lands on it.
+  const leftPad = ' '.repeat(Math.max(0, Math.floor((layout.cols - 80) / 2)))
+  const topPad = Math.max(0, Math.floor((layout.rows - 23) / 2))
+
   const lines: string[] = []
+  for (let i = 0; i < topPad; i++) lines.push('')
   for (let i = 0; i < HUD_ROWS; i++) {
-    lines.push(`${meLines[i]}${hudLines[i]}${oppLines[i]}`)
+    lines.push(`${leftPad}${meLines[i]}${hudLines[i]}${oppLines[i]}`)
   }
-  lines.push(padStatusLine(statusLine))
+  lines.push(leftPad + padStatusLine(statusLine))
 
   // Positional framing (transcribed from packages/snake-client/src/render.ts,
   // frozen post-813d2a9/8f417db): ESC[H repaints from the top-left instead of
