@@ -1,6 +1,6 @@
 {
   "name": "blockwait-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "blockwait block-stacking rules engine: pieces, SRS rotation, state, deterministic sim",
   "type": "module",
   "license": "MIT",

@@ -254,45 +254,51 @@ STATE=$(cat "$T_HOME/.fragwait/rotation.json")
 echo "PASS: registry entry with no cmd leaves rotation state completely untouched"
 
 # ------------------------------------------------------------------------
-# Test 9: real four-entry registry (fragwait + checkwait + boomwait +
-# snakewait, as shipped by Task 12) cycles on consecutive launches. Stored
-# "next" is (picked_index + 1), not modded to the registry length, so it
-# climbs 1 -> 2 -> 3 -> 4 -> 1 (idx wraps at read time via next %
-# games.length) rather than 0 -> 1 -> 2 -> 3 -> 0 -- see the wraparound
-# comment on the synthetic 3-game rotation test above for why this is
-# intentional.
+# Test 9: real five-entry registry (fragwait + checkwait + boomwait +
+# snakewait + blockwait, as shipped by Task 13) cycles on consecutive
+# launches. Stored "next" is (picked_index + 1), not modded to the registry
+# length, so it climbs 1 -> 2 -> 3 -> 4 -> 5 -> 1 (idx wraps at read time via
+# next % games.length) rather than 0 -> 1 -> 2 -> 3 -> 4 -> 0 -- see the
+# wraparound comment on the synthetic 3-game rotation test above for why
+# this is intentional.
 # ------------------------------------------------------------------------
 T_HOME=$(mktemp -d)
 T_ROOT=$(mktemp -d)
 cp "$REPO_ROOT/plugin/games.json" "$T_ROOT/games.json"
 
-RECORD="$WORK/tmux_four_entry_real.txt"
+RECORD="$WORK/tmux_five_entry_real.txt"
 : > "$RECORD"
 OUT1=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT1" | grep -q "fragwait" || fail "real four-entry rotation pick 1 expected fragwait, got: $OUT1"
-grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "real four-entry rotation state after pick 1 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "$OUT1" | grep -q "fragwait" || fail "real five-entry rotation pick 1 expected fragwait, got: $OUT1"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 1 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 
 OUT2=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT2" | grep -q "checkwait" || fail "real four-entry rotation pick 2 expected checkwait, got: $OUT2"
-grep -q '"next":2' "$T_HOME/.fragwait/rotation.json" || fail "real four-entry rotation state after pick 2 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "$OUT2" | grep -q "checkwait" || fail "real five-entry rotation pick 2 expected checkwait, got: $OUT2"
+grep -q '"next":2' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 2 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 
 OUT3=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT3" | grep -q "boomwait" || fail "real four-entry rotation pick 3 expected boomwait, got: $OUT3"
-grep -q '"next":3' "$T_HOME/.fragwait/rotation.json" || fail "real four-entry rotation state after pick 3 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "$OUT3" | grep -q "boomwait" || fail "real five-entry rotation pick 3 expected boomwait, got: $OUT3"
+grep -q '"next":3' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 3 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 
 OUT4=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT4" | grep -q "snakewait" || fail "real four-entry rotation pick 4 expected snakewait, got: $OUT4"
-grep -q '"next":4' "$T_HOME/.fragwait/rotation.json" || fail "real four-entry rotation state after pick 4 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "$OUT4" | grep -q "snakewait" || fail "real five-entry rotation pick 4 expected snakewait, got: $OUT4"
+grep -q '"next":4' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 4 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 
 OUT5=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
-echo "$OUT5" | grep -q "fragwait" || fail "real four-entry rotation pick 5 expected wraparound to fragwait, got: $OUT5"
-grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "real four-entry rotation state after pick 5 (wraparound) unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
-echo "PASS: real fragwait/checkwait/boomwait/snakewait registry cycles on consecutive launches"
+echo "$OUT5" | grep -q "blockwait" || fail "real five-entry rotation pick 5 expected blockwait, got: $OUT5"
+grep -q '"next":5' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 5 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+grep -qF "ARG:npx -y blockwait@0.1.0" "$RECORD" || fail "tmux shim did not receive the real blockwait registry cmd: $(cat "$RECORD")"
+
+OUT6=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT6" | grep -q "fragwait" || fail "real five-entry rotation pick 6 expected wraparound to fragwait, got: $OUT6"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 6 (wraparound) unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "PASS: real fragwait/checkwait/boomwait/snakewait/blockwait registry cycles on consecutive launches"
 
 # ------------------------------------------------------------------------
 # Test 10: four-entry registry (fragwait + checkwait + boomwait + snakewait,

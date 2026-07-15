@@ -19,6 +19,11 @@
       "id": "snakewait",
       "title": "snakewait — terminal snake battle",
       "cmd": "npx -y snakewait@0.1.0"
+    },
+    {
+      "id": "blockwait",
+      "title": "blockwait — terminal block-stacking duel",
+      "cmd": "npx -y blockwait@0.1.0"
     }
   ]
 }

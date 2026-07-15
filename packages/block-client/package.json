@@ -1,10 +1,10 @@
 {
   "name": "blockwait",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "license": "MIT",
   "bin": { "blockwait": "bin/blockwait.js" },
   "files": ["dist", "bin"],
   "scripts": { "build": "tsc -p tsconfig.json" },
-  "dependencies": { "blockwait-core": "0.0.0", "termwait": "0.1.0", "ws": "8.21.0" }
+  "dependencies": { "blockwait-core": "0.1.0", "termwait": "0.1.0", "ws": "8.21.0" }
 }
