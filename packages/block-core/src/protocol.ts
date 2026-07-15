@@ -1,5 +1,5 @@
 import { BOARD_W, MAX_EVENTS_PER_TICK, TOTAL_ROWS } from './constants.js'
-import { KINDS, type Rot } from './pieces.js'
+import { cellsAt, KINDS, type Rot } from './pieces.js'
 import { bIdx, EVENT_CODES, type ActivePiece, type GarbageEntry, type MatchState, type PlayerState, type Result } from './state.js'
 
 export const MAX_RAW = 4096 // inbound size cap, applied both directions
@@ -212,7 +212,7 @@ function isRng(v: unknown): v is number {
   return isNonNegInt(v) && v <= MAX_RNG
 }
 
-function isBoolArr01(v: unknown): boolean {
+function isBool01(v: unknown): boolean {
   return v === 0 || v === 1
 }
 
@@ -236,19 +236,26 @@ function isRot(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 3
 }
 
-function isCoordX(v: unknown): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < BOARD_W
-}
+// Coarse sanity bound on raw piece box-origin ints so cellsAt is never fed
+// garbage. Box origins are NOT cell columns: SRS lets legal origins go
+// negative (I rot1 at x=-2 is a vertical I in column 0; JLSTZ rot1 at x=-1
+// hugs the left wall; upward kicks can drive y to 0).
+const MAX_PIECE_COORD = 32
 
-function isCoordY(v: unknown): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < TOTAL_ROWS
+function isPieceCoord(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= MAX_PIECE_COORD
 }
 
 function isWirePiece(v: unknown): v is [number, number, number, number] | 0 {
   if (v === 0) return true
   if (!Array.isArray(v) || v.length !== 4) return false
   const [kindCode, rot, x, y] = v
-  return isKindCode(kindCode) && isRot(rot) && isCoordX(x) && isCoordY(y)
+  if (!isKindCode(kindCode) || !isRot(rot) || !isPieceCoord(x) || !isPieceCoord(y)) return false
+  // Validate the DECODED piece: every occupied cell must land in-board.
+  const kind = KINDS[(kindCode as number) - 1]!
+  return cellsAt(kind, rot as Rot, x as number, y as number).every(
+    ([cx, cy]) => cx >= 0 && cx < BOARD_W && cy >= 0 && cy < TOTAL_ROWS,
+  )
 }
 
 function isQueue(v: unknown): v is number[] {
@@ -294,15 +301,15 @@ function isWirePlayer(v: unknown): v is WirePlayer {
   return (
     isPlayerId(id) &&
     isName(name) &&
-    isBoolArr01(bot) &&
-    isBoolArr01(alive) &&
+    isBool01(bot) &&
+    isBool01(alive) &&
     isNonNegInt(tick) &&
     isBoardRows(boardRows) &&
     isWirePiece(piece) &&
     isQueue(queueCodes) &&
     isRng(bagRng) &&
     isHoldCode(holdCode) &&
-    isBoolArr01(holdUsed) &&
+    isBool01(holdUsed) &&
     isFallCooldown(fallCooldown) &&
     isLockTicks(lockTicks) &&
     isLockResets(lockResets) &&
@@ -423,7 +430,7 @@ export function parseBlockServerMsg(raw: unknown): BlockServerMsg | null {
     const names = o['names']
     const bots = o['bots']
     if (!isPlayerId(you)) return null
-    if (!isFiniteNum(seed)) return null
+    if (!isNonNegInt(seed)) return null
     if (!Array.isArray(names) || names.length !== 2 || !names.every(isName)) return null
     if (!Array.isArray(bots) || bots.length !== 2 || !bots.every((b) => typeof b === 'boolean')) return null
     return { t: 'start', you, seed, names: [...(names as string[])], bots: [...(bots as boolean[])] }

@@ -185,6 +185,60 @@ describe('parseBlockServerMsg hardening', () => {
     }
   })
 
+  it('accepts a snap whose active piece is I rot1 at x=-2 (vertical I in column 0)', () => {
+    const m = createMatch(9, NAMES, BOTS)
+    const p0 = { ...m.players[0]!, piece: { kind: 'I' as const, rot: 1 as const, x: -2, y: 5 } }
+    const m2 = { ...m, players: [p0, m.players[1]!] as [typeof p0, typeof m.players[1]] }
+    const raw = JSON.stringify({ t: 'snap', state: toWire(m2) })
+    const parsed = parseBlockServerMsg(raw)
+    expect(parsed).not.toBeNull()
+    if (parsed && parsed.t === 'snap') {
+      expect(fromWire(parsed.state)).toEqual(m2)
+    }
+  })
+
+  it('accepts a snap with a JLSTZ piece at rot1 x=-1 (left wall)', () => {
+    const m = createMatch(9, NAMES, BOTS)
+    const p0 = { ...m.players[0]!, piece: { kind: 'T' as const, rot: 1 as const, x: -1, y: 5 } }
+    const m2 = { ...m, players: [p0, m.players[1]!] as [typeof p0, typeof m.players[1]] }
+    const parsed = parseBlockServerMsg(JSON.stringify({ t: 'snap', state: toWire(m2) }))
+    expect(parsed).not.toBeNull()
+    if (parsed && parsed.t === 'snap') {
+      expect(fromWire(parsed.state)).toEqual(m2)
+    }
+  })
+
+  it('rejects a piece whose cells fall out of the board (I rot1 x=-3)', () => {
+    const m = createMatch(9, NAMES, BOTS)
+    const state = toWire(m) as WireState
+    const bad: WireState = {
+      ...state,
+      players: [
+        { ...state.players[0], 6: [1, 1, -3, 5] } as WireState['players'][0],
+        state.players[1],
+      ],
+    }
+    expect(parseBlockServerMsg(JSON.stringify({ t: 'snap', state: bad }))).toBeNull()
+  })
+
+  it('rejects a piece with an absurd raw coordinate magnitude', () => {
+    const m = createMatch(9, NAMES, BOTS)
+    const state = toWire(m) as WireState
+    const bad: WireState = {
+      ...state,
+      players: [
+        { ...state.players[0], 6: [1, 1, 2, 1e9] } as WireState['players'][0],
+        state.players[1],
+      ],
+    }
+    expect(parseBlockServerMsg(JSON.stringify({ t: 'snap', state: bad }))).toBeNull()
+  })
+
+  it('rejects a StartMsg whose seed is not a non-negative integer', () => {
+    expect(parseBlockServerMsg(JSON.stringify({ t: 'start', you: 0, seed: 1.5, names: ['a', 'b'], bots: [false, false] }))).toBeNull()
+    expect(parseBlockServerMsg(JSON.stringify({ t: 'start', you: 0, seed: -1, names: ['a', 'b'], bots: [false, false] }))).toBeNull()
+  })
+
   it('rejects a board row that is not valid hex-nibble digits', () => {
     const m = createMatch(9, NAMES, BOTS)
     const state = toWire(m) as WireState
