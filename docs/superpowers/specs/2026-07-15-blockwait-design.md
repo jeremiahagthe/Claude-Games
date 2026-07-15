@@ -43,6 +43,12 @@ In a 1v1 duel the two boards are independent except for garbage. So:
   tick-stamped, seq-numbered input-event batches; the MatchDO replays them
   through the identical reducer. A lying client cannot fake a clear —
   clears/attacks are derived server-side from inputs, never claimed.
+  Because the boards are independent, each board advances on its OWN tick
+  clock server-side (`stepPlayer`), driven by that client's batches — no
+  rewind needed. Lag/lead clamps (a client may run at most 5 ticks ahead
+  of the server wall clock; one lagging more than 25 ticks behind is
+  force-advanced with empty inputs) keep both clocks honest, preserve the
+  sudden-death end bound online, and prevent stall-to-delay-garbage.
 - **Opponent board is render-only** from server snaps (4Hz) — latency there
   is harmless.
 - **Garbage is server-arbitrated**: cancellation and arrival ticks are
@@ -98,8 +104,10 @@ hash), bot-free, pinned early.
 `BOARD_W=10, BOARD_H=20, HIDDEN_ROWS=4, TICK_RATE=20, PREVIEW=3,
 LOCK_DELAY_TICKS=10, LOCK_RESETS_MAX=15, ATTACK={1:0, 2:1, 3:2, 4:4},
 GRAVITY_SCHEDULE=[20,15,10,6,4,3,2] (ticks per cell, advance every 400
-ticks, floor 2 from tick 2400), SOFT_DROP_FACTOR=4,
-SUDDEN_DEATH_TICK=2400, SUDDEN_DEATH_INTERVAL=100, MAX_EVENTS_PER_TICK=8`.
+ticks, floor 2 from tick 2400), SUDDEN_DEATH_TICK=2400,
+SUDDEN_DEATH_INTERVAL=100, MAX_EVENTS_PER_TICK=8`. Soft drop is one fall
+attempt per `softDrop` event (OS key auto-repeat supplies the rate — up to
+one cell per tick, 20 cells/s); there is no separate soft-drop factor.
 
 ### State & sim
 
@@ -107,10 +115,12 @@ SUDDEN_DEATH_TICK=2400, SUDDEN_DEATH_INTERVAL=100, MAX_EVENTS_PER_TICK=8`.
   (kind, rotation 0-3, x, y), hold slot + one-per-piece lockout, bag cursor,
   stats (linesCleared, linesSent), pendingGarbage queue
   (entries: {rows, holeCol}), alive flag.
-- **7-bag**: both players draw from the SAME seeded sequence (fair, standard
-  for versus). Bag refills are deterministic from the shared rng stream
-  dedicated to bags; garbage hole columns use a second dedicated stream so
-  piece sequence never depends on garbage history.
+- **7-bag**: both players see the SAME piece sequence (fair, standard for
+  versus), implemented as identical per-player bag RNGs seeded from the
+  match seed — each player's queue refills independently but produces the
+  same order, keeping per-player state bounded regardless of clock skew.
+  Garbage hole columns use a separate rng stream so the piece sequence
+  never depends on garbage history.
 - **SRS**: guideline spawn positions/orientations; standard kick tables
   (JLSTZ shared table, I its own). Rotation tries 5 offsets, first legal
   wins, else rotation fails silently.
@@ -140,8 +150,9 @@ SUDDEN_DEATH_TICK=2400, SUDDEN_DEATH_INTERVAL=100, MAX_EVENTS_PER_TICK=8`.
   Placement enumeration (Dellacherie family): for the current piece (hard
   difficulty also tries the hold/next swap), enumerate reachable
   (rotation × column) hard-drop placements, score the resulting board:
-  aggregate height, holes, bumpiness, lines cleared, well depth (weights
-  pinned as constants). Best placement becomes a queued input-event
+  the classic 4-term heuristic — aggregate height, complete lines, holes,
+  bumpiness — with the published El-Tetris/Lee weights pinned as constants
+  (well depth dropped, YAGNI). Best placement becomes a queued input-event
   sequence (rotates → shifts → hardDrop) emitted at a human rate.
 - Difficulty knobs: easy = 1 event per 8 ticks + picks uniformly from the
   top-3 placements 25% of decisions; normal = 1 per 4 ticks; hard = 1 per
@@ -156,16 +167,21 @@ SUDDEN_DEATH_TICK=2400, SUDDEN_DEATH_INTERVAL=100, MAX_EVENTS_PER_TICK=8`.
   patterns; validators rebuild fresh literals, per-field type+range checks,
   **cumulative-size caps included from day one** (the snakewait fromWire
   lesson — no unbounded decoded paths).
-- Upstream: `{t:'hello'...}`, `{t:'input', tick, seq, events:[codes]}` —
-  tick-stamped, seq-numbered batches. Server clamps stamps to a 25-tick
-  replay horizon (older → applied at horizon edge; future → clamped to
-  now), drops out-of-order seq, caps events per tick at 8.
+- Upstream: `{t:'hello'...}`, `{t:'input', seq, upTo, events:[[tick,
+  code]...]}` — "my clock reached tick `upTo`; these are my events since
+  the last batch", sent ~every 5 ticks. Server validation: seq and upTo
+  strictly monotonic, event ticks within (lastUpTo, upTo], ≤ 8 events per
+  tick, upTo at most 5 ticks ahead of the server wall clock; a player
+  lagging > 25 ticks behind is force-advanced with empty inputs.
 - Downstream: `start` (ids, names, seed, your slot), `snap` (full WireState,
-  4Hz + on demand for resync), `garbage` ({n, atTick} — lets the local sim
-  schedule incoming garbage exactly), `end`.
-- WireState: tick, per player — 24 row-bitmask ints (10 bits each), active
-  piece tuple, hold, next-3, pendingGarbage total, linesCleared/Sent,
-  alive. No RLE needed; snapshot pinned < 2048 bytes by a worst-case-board
+  4Hz + on demand for resync), `garbage` ({rows, holeCol, atTick on the
+  victim's own clock} — lets the local sim schedule incoming garbage
+  exactly), `end`.
+- WireState: per player — own tick, board as 24 hex-nibble row strings
+  (0=empty, 1-7 piece kinds, 8=garbage — colors survive the wire), active
+  piece tuple, hold, queue + bag rng, fall/lock bookkeeping, pending
+  garbage entries, linesCleared/Sent, alive. Full PlayerState round-trips
+  (resync needs it); snapshot pinned < 2048 bytes by a worst-case-board
   test.
 - Golden toWire/fromWire round-trip test.
 
@@ -174,10 +190,13 @@ SUDDEN_DEATH_TICK=2400, SUDDEN_DEATH_INTERVAL=100, MAX_EVENTS_PER_TICK=8`.
 - `BlockLobbyDO`: bomber queue shape, ~10s gather window, **resolves early
   at 2 humans**, bot backfill 'normal' otherwise, resolve-exactly-once.
 - `BlockMatchDO`: monotonic connId + start-time compaction, 50ms alarm
-  tick, **input-replay loop** — each tick applies buffered client batches
-  at their (clamped) stamped ticks and steps the shared reducer; bot events
-  injected server-side; 4Hz snap broadcast + garbage events; disconnect →
-  5s grace → forfeit via killPlayer; 'empty' stop; tombstone null-safe.
+  tick, **input-replay loop** — each player's board advances on its own
+  clock via `stepPlayer` driven by that client's batches (lag/lead clamps
+  above); the alarm force-advances laggards, routes attacks between
+  boards, applies sudden death, and stamps the result; bot events injected
+  server-side on the wall clock; 4Hz snap broadcast + garbage events;
+  disconnect → 5s grace → forfeit via killPlayer; 'empty' stop; tombstone
+  null-safe.
 - Routes: `POST /block/join {name}` → `{matchId, token}`;
   `GET /block/match/:id/ws?token=`. **Join 400s on missing/malformed body
   from day one** (the snakewait CF-1101 lesson).
