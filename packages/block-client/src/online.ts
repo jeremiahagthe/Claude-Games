@@ -12,7 +12,9 @@
 //     default; a snap only REPLACES local you-state on one of three pinned resync triggers
 //     (shouldAdoptSnap): a past-garbage divergence, a server force-advance, or death.
 //   • Garbage arrives per-attack stamped on YOUR own clock: future → scheduled and queued exactly
-//     when the local clock reaches atTick; already-reached → a resync (our board diverged).
+//     when the local clock reaches atTick; already-reached → queued immediately when no local
+//     lock intervened after atTick (equivalent — pending garbage only materializes at locks), or
+//     a resync when one did (genuine divergence). Resync rare by construction, per the spec.
 //
 // Reuses game.ts's session glue (setupGame/teardownAndExit) exactly like offline.ts, and keeps
 // snake's hard-won TDZ-avoidance and result-precedence specifics (see the inline comments).
@@ -45,12 +47,34 @@ export function shouldAdoptSnap(local: PlayerState, snapYou: PlayerState, resync
   return resyncFlag || snapYou.tick >= local.tick || snapYou.alive === false
 }
 
-// Classify an inbound garbage message by its atTick (stamped on OUR own clock) against where our
-// local clock is right now: still in the future → schedule it; already reached/passed → our board
-// diverged from the server's (it applied garbage at a tick we've already run past clean), so
-// resync. Exported for tests.
-export function classifyGarbage(atTick: number, localTick: number): 'schedule' | 'resync' {
-  return atTick > localTick ? 'schedule' : 'resync'
+// Classify an inbound garbage message by its atTick (stamped on OUR own clock, at the server's
+// queue time) against the local clock and the last LOCAL lock tick. The spec's governing promise
+// is "garbage events let the local sim schedule incoming garbage exactly; resync rare by
+// construction" — and the server's atTick is ALWAYS ≤ our local tick (it stamps our server-side
+// tick, at best our lastSentUpTo), so past-atTick is the NORMAL case, not a divergence:
+//   • atTick > localTick             → 'schedule' (apply when the clock gets there);
+//   • atTick ≤ localTick, no local lock AFTER atTick → 'queue' immediately — semantically
+//     identical to queueing at atTick, because pendingGarbage only materializes at locks and none
+//     intervened;
+//   • atTick ≤ localTick with a local lock after it  → 'resync' — that lock already
+//     consumed/deferred pending garbage the server will replay differently: genuine divergence.
+// Exported for tests.
+export function classifyGarbage(atTick: number, localTick: number, lastLockTick: number): 'schedule' | 'queue' | 'resync' {
+  if (atTick > localTick) return 'schedule'
+  return lastLockTick > atTick ? 'resync' : 'queue'
+}
+
+// The full inbound-garbage transition classifyGarbage drives: schedule / queue-now / flag-resync.
+// Pure; exported for tests (this is the seam onGarbage delegates to).
+export function applyGarbageMsg(
+  you: PlayerState,
+  msg: GarbageMsg,
+  lastLockTick: number,
+): { you: PlayerState; schedule: GarbageMsg | null; resync: boolean } {
+  const kind = classifyGarbage(msg.atTick, you.tick, lastLockTick)
+  if (kind === 'schedule') return { you, schedule: msg, resync: false }
+  if (kind === 'queue') return { you: queueGarbage(you, msg.rows, msg.holeCol), schedule: null, resync: false }
+  return { you, schedule: null, resync: true }
 }
 
 // Materialize every scheduled garbage entry whose atTick the local clock has now reached (<=),
@@ -112,6 +136,11 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   // at a tick ≤ it would land outside the server's (lastUpTo, upTo] batch window and silently
   // drop the WHOLE batch (block-match.ts applyOneBatch).
   let lastSentUpTo = 0
+  // Tick of the most recent LOCAL lock (-1 = none since the last sync point). onGarbage needs it:
+  // a past-atTick attack is only a genuine divergence if a local lock intervened after atTick
+  // (that lock consumed/deferred pending garbage the server will replay differently); otherwise
+  // it queues immediately and no resync happens (the spec's "resync rare by construction").
+  let lastLockTick = -1
 
   let connected: Awaited<ReturnType<typeof BlockNetClient.connect>>
   try {
@@ -133,24 +162,36 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
           // back — so events must never again stamp at or below it:
           //   • fast-forward the adopted state to lastSentUpTo with empty-event ticks, so every
           //     future event stamps at t > lastSentUpTo, a floor the server has provably accepted;
-          //   • drop unsent events at or below max(snap tick, lastSentUpTo) — the server has them,
-          //     ran past them, or would reject them.
+          //   • drop ALL unsent pendingEvents. They were applied to the PRE-adoption local state,
+          //     which no longer exists — sending them without re-applying them locally would
+          //     silently diverge the two boards, and restamped new events on the same ticks could
+          //     merge with them past MAX_EVENTS_PER_TICK (whole batch dropped server-side). The
+          //     ≤ BATCH_TICKS of input loss is coherent and honest; retention is neither.
           // Residual race: a CONCURRENT server force-advance can push its lastUpTo above our
           // lastSentUpTo between this adoption and our next batch, which would still drop that one
           // batch. It's narrow (only while we're > LAG_TICKS behind), bounded (one batch), and
           // self-heals: the force-advanced snap satisfies trigger (2) and re-adopts us forward.
           let adopted = snapYou
-          while (adopted.alive && adopted.tick < lastSentUpTo) adopted = stepPlayer(adopted, []).player
+          // The adopted state is server-known up to its own tick — locks baked into it are not
+          // local divergence. Only locks from here on (including any during this fast-forward,
+          // where gravity can ground and lock a piece) count against future garbage atTicks.
+          lastLockTick = -1
+          while (adopted.alive && adopted.tick < lastSentUpTo) {
+            const ff = stepPlayer(adopted, [])
+            adopted = ff.player
+            if (ff.locked) lastLockTick = adopted.tick
+          }
           you = adopted
           resyncFlag = false
-          const floor = Math.max(snapYou.tick, lastSentUpTo)
-          pendingEvents = pendingEvents.filter(([t]) => t > floor)
+          pendingEvents = []
         }
       },
       onGarbage(msg) {
         if (you === null) return
-        if (classifyGarbage(msg.atTick, you.tick) === 'resync') resyncFlag = true
-        else scheduled.push(msg)
+        const r = applyGarbageMsg(you, msg, lastLockTick)
+        you = r.you
+        if (r.schedule) scheduled.push(r.schedule)
+        if (r.resync) resyncFlag = true
       },
       onEnd(result) {
         ended = result
@@ -214,6 +255,7 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
       const out = stepPlayer(you!, events)
       you = out.player
       const localTick = you.tick
+      if (out.locked) lastLockTick = localTick // onGarbage's divergence test reads this
       if (wasAlive) for (const ev of events) pendingEvents.push([localTick, EVENT_CODES.indexOf(ev)])
 
       // Materialize any scheduled garbage the local clock has now reached.
@@ -228,12 +270,16 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
         lastSent = you.linesSent
       }
 
-      // Batch cadence: flush accumulated events every BATCH_TICKS. The lastSentUpTo guard keeps
-      // upTo strictly monotonic (a dead player's frozen clock must never re-send the same upTo).
-      // The event filter is belt-and-braces for the adoption path above: no event at or below the
-      // server's accepted floor may ever ride in a batch — one such event drops the whole batch
-      // server-side (silent input loss).
-      if (batchDue(localTick) && localTick > lastSentUpTo) {
+      // Batch cadence: flush accumulated events every BATCH_TICKS — OR the instant we die. Death
+      // freezes the local clock, so batchDue would never fire again; without the flush, a death
+      // landing off a batch boundary strands the fatal hardDrop (and the attack a same-lock clear
+      // routed) in pendingEvents forever and the server never sees it. The lastSentUpTo guard
+      // keeps upTo strictly monotonic (a dead player's frozen clock must never re-send the same
+      // upTo — it also makes the death flush one-shot). The event filter is belt-and-braces for
+      // the adoption path above: no event at or below the server's accepted floor may ever ride
+      // in a batch — one such event drops the whole batch server-side (silent input loss).
+      const diedThisTick = wasAlive && !you.alive
+      if ((batchDue(localTick) || diedThisTick) && localTick > lastSentUpTo) {
         net.sendInput({ t: 'input', seq: seq++, upTo: localTick, events: pendingEvents.filter(([t]) => t > lastSentUpTo) })
         pendingEvents = []
         lastSentUpTo = localTick

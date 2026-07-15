@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMatch, queueGarbage, stepPlayer, toWire, type GarbageMsg, type PlayerState } from 'blockwait-core'
-import { applyDueGarbage, batchDue, classifyGarbage, composeMatchState, shouldAdoptSnap } from '../src/online.js'
+import { applyDueGarbage, applyGarbageMsg, batchDue, classifyGarbage, composeMatchState, shouldAdoptSnap } from '../src/online.js'
 
 // ---------------------------------------------------------------------------
 // Pure exported helpers — the resync/garbage/batch semantics pinned in the plan.
@@ -40,11 +40,53 @@ describe('shouldAdoptSnap (the three adoption triggers + local-wins default)', (
   })
 })
 
+// The spec's governing promise: "garbage events let the local sim schedule incoming garbage
+// exactly; resync rare by construction". The server stamps atTick = our server-side tick at queue
+// time, which is ALWAYS ≤ our local tick (at best it equals lastSentUpTo) — so past-atTick must be
+// the normal case, not a resync. Only an intervening LOCAL LOCK after atTick is genuine
+// divergence: that lock already consumed/deferred pending garbage the server will replay
+// differently.
 describe('classifyGarbage', () => {
-  it("a future atTick schedules; an atTick at-or-before our clock triggers resync", () => {
-    expect(classifyGarbage(10, 5)).toBe('schedule') // future → schedule
-    expect(classifyGarbage(5, 5)).toBe('resync') // already reached → we diverged
-    expect(classifyGarbage(3, 5)).toBe('resync') // already passed → we diverged
+  it('a future atTick schedules', () => {
+    expect(classifyGarbage(10, 5, -1)).toBe('schedule')
+  })
+
+  it('a past atTick with NO local lock after it queues immediately (resync rare by construction)', () => {
+    expect(classifyGarbage(5, 5, -1)).toBe('queue') // no lock at all
+    expect(classifyGarbage(3, 5, 3)).toBe('queue') // lock AT atTick is not after it
+    expect(classifyGarbage(3, 5, 2)).toBe('queue') // lock before atTick
+  })
+
+  it('a past atTick with a local lock after it is genuine divergence → resync', () => {
+    expect(classifyGarbage(3, 5, 4)).toBe('resync')
+    expect(classifyGarbage(3, 5, 5)).toBe('resync')
+  })
+})
+
+describe('applyGarbageMsg (mid-match attack handling seam)', () => {
+  const msg = (atTick: number): GarbageMsg => ({ t: 'garbage', rows: 2, holeCol: 3, atTick })
+
+  it('future atTick → handed back for scheduling, state untouched', () => {
+    const you = playerAt(5)
+    const r = applyGarbageMsg(you, msg(9), -1)
+    expect(r.schedule).toEqual(msg(9))
+    expect(r.you).toBe(you)
+    expect(r.resync).toBe(false)
+  })
+
+  it('past atTick, no intervening local lock → pendingGarbage gains the entry, NO resync', () => {
+    const r = applyGarbageMsg(playerAt(10), msg(7), 5) // last lock at 5 ≤ atTick 7
+    expect(r.you.pendingGarbage).toEqual([{ rows: 2, holeCol: 3 }])
+    expect(r.resync).toBe(false) // and thus no adoption on the next snap (shouldAdoptSnap default)
+    expect(r.schedule).toBeNull()
+  })
+
+  it('past atTick with a local lock after it → resync, state untouched', () => {
+    const you = playerAt(10)
+    const r = applyGarbageMsg(you, msg(7), 9) // lock at 9 > atTick 7: divergence
+    expect(r.resync).toBe(true)
+    expect(r.you).toBe(you)
+    expect(r.schedule).toBeNull()
   })
 })
 
@@ -377,13 +419,14 @@ describe('runOnline input batching', () => {
 // tick strictly above the pre-adoption floor, with the inputs actually delivered (not dropped).
 
 describe('runOnline resync adoption (backward clock) keeps batches server-acceptable', () => {
-  it('post-adoption batches stamp every event above the pre-adoption sent floor', async () => {
+  it('post-adoption batches stamp every event above the pre-adoption sent floor, with stale pending events dropped', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '1' }) }))
     FakeWs.script = (ws) => {
       humanStart(ws)
       // At ~560ms the local clock is at tick 11 (loop ticks every 50ms) and batches for upTo 5
-      // and 10 have been sent. Past garbage (atTick 8 ≤ 11) sets resyncFlag; the tick-3 snap
+      // and 10 have been sent. A LOCAL LOCK happened at tick 9 (the scripted hardDrop below), so
+      // past garbage with atTick 8 < 9 is genuine divergence → resyncFlag; the tick-3 snap
       // (< 11) then triggers adoption — the backward-clock path under test.
       setTimeout(() => {
         ws.emitJson({ t: 'garbage', rows: 2, holeCol: 3, atTick: 8 })
@@ -391,7 +434,10 @@ describe('runOnline resync adoption (backward clock) keeps batches server-accept
       }, 560)
     }
 
-    // 'left' on loop tick 2 (pre-adoption), 'right' on loop ticks 13 and 14 (post-adoption).
+    // 'left' on loop tick 2 (sent in the upTo-5 batch), 'hardDrop' on tick 9 (the intervening
+    // lock), 'left' on tick 11 (UNSENT pre-adoption — must be dropped wholesale on adoption, not
+    // retained: retained events were never re-applied to the adopted local state and can merge
+    // with re-issued ticks past MAX_EVENTS_PER_TICK), 'right' on ticks 13/14 (post-adoption).
     let tick = 0
     const game = await import('../src/game.js')
     vi.mocked(game.setupGame).mockImplementation(
@@ -399,7 +445,8 @@ describe('runOnline resync adoption (backward clock) keeps batches server-accept
         mockSetupGame({
           drainInput: () => {
             const t = ++tick
-            if (t === 2) return ['left']
+            if (t === 2 || t === 11) return ['left']
+            if (t === 9) return ['hardDrop']
             if (t === 13 || t === 14) return ['right']
             return []
           },
@@ -415,9 +462,9 @@ describe('runOnline resync adoption (backward clock) keeps batches server-accept
     const ws = FakeWs.instances.at(-1)!
     const batches = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'input')
     // Anchor the pre-adoption floor: first two batches are upTo 5 (carrying the 'left' at tick 2)
-    // and upTo 10.
+    // and upTo 10 (carrying the hardDrop lock at tick 9).
     expect(batches[0]).toMatchObject({ seq: 0, upTo: 5, events: [[2, 0]] })
-    expect(batches[1]).toMatchObject({ seq: 1, upTo: 10 })
+    expect(batches[1]).toMatchObject({ seq: 1, upTo: 10, events: [[9, 5]] })
     const floor = 10
 
     // Strictly monotonic seq and upTo across ALL batches (the server drops violations silently).
@@ -427,7 +474,7 @@ describe('runOnline resync adoption (backward clock) keeps batches server-accept
     }
 
     // Every post-adoption batch: all event ticks strictly above the floor AND within (floor, upTo]
-    // — i.e. the server's applyOneBatch would accept it, no silent input loss.
+    // — i.e. the server's applyOneBatch would accept it, no silent whole-batch loss.
     const post = batches.filter((b) => b.seq >= 2)
     expect(post.length).toBeGreaterThan(0)
     for (const b of post) {
@@ -436,8 +483,109 @@ describe('runOnline resync adoption (backward clock) keeps batches server-accept
         expect(t).toBeLessThanOrEqual(b.upTo)
       }
     }
-    // And the post-adoption 'right' inputs (code 1) actually made it to the wire.
-    expect(post.flatMap((b) => b.events.map(([, c]: [number, number]) => c))).toContain(1)
+    const postCodes = post.flatMap((b) => b.events.map(([, c]: [number, number]) => c))
+    // The tick-11 'left' (code 0) was pending-unsent at adoption: dropped, never on the wire.
+    expect(postCodes).not.toContain(0)
+    // The post-adoption 'right' inputs (code 1) did make it to the wire.
+    expect(postCodes).toContain(1)
+  })
+})
+
+// --- past-atTick garbage WITHOUT an intervening lock: no resync, no adoption (finding #1) -----
+//
+// The server stamps atTick = our server-side tick at queue time, always ≤ our local tick — if that
+// alone forced a resync, EVERY received attack would rubber-band the board (the 'schedule' branch
+// would be dead code). With no local lock after atTick, queueing the garbage immediately is
+// semantically identical to queueing at atTick (pendingGarbage only materializes at locks), so the
+// local sim stays authoritative and the next older-tick snap must NOT be adopted.
+
+describe('runOnline past-atTick garbage without an intervening lock', () => {
+  it('does not resync: an older snap after the attack is NOT adopted (local clock never rewinds)', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '1' }) }))
+    FakeWs.script = (ws) => {
+      humanStart(ws)
+      // Local tick ~11, NO local lock has happened (no hardDrop; gravity is 20 ticks/cell so
+      // nothing locked by tick 11). atTick 8 ≤ 11 → must queue immediately, NOT resync; the
+      // tick-3 snap right behind it must then be ignored (local wins).
+      setTimeout(() => {
+        ws.emitJson({ t: 'garbage', rows: 2, holeCol: 3, atTick: 8 })
+        ws.emitJson({ t: 'snap', state: seededWire(3) })
+      }, 560)
+    }
+
+    let tick = 0
+    const game = await import('../src/game.js')
+    vi.mocked(game.setupGame).mockImplementation(
+      async () =>
+        mockSetupGame({
+          drainInput: () => (++tick === 13 ? ['right'] : []),
+          quitRequested: () => tick > 20,
+        }) as never,
+    )
+
+    const { runOnline } = await import('../src/online.js')
+    const resultPromise = runOnline({ server: 'http://s', name: 'you' })
+    await vi.advanceTimersByTimeAsync(1500)
+    await resultPromise
+
+    const ws = FakeWs.instances.at(-1)!
+    const batches = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'input')
+    // The tick-13 'right' stamps at LOCAL tick 13: no adoption ever rewound the clock (an adoption
+    // to the tick-3 snap fast-forwarded to 10 would restamp this same loop iteration at tick 12).
+    const withEvents = batches.filter((b) => b.events.length > 0)
+    expect(withEvents).toHaveLength(1)
+    expect(withEvents[0].events).toEqual([[13, 1]])
+  })
+})
+
+// --- final batch flush on death (finding #2) --------------------------------------------------
+//
+// Death freezes the local clock, so batchDue (tick % BATCH_TICKS === 0) never fires again — if
+// death lands off a batch boundary, the fatal hardDrop (and the attack a same-lock clear routed)
+// would never reach the server. The loop must flush the partial batch the instant alive flips.
+
+describe('runOnline flushes the final batch when death lands off a batch boundary', () => {
+  it('sends a last batch with upTo = death tick containing the fatal event', async () => {
+    // Deterministic local death: hardDrop every tick from tick 1 on the seed-42 board tops out at
+    // a known tick. Computed with the REAL core sim so the test tracks any core rebalance.
+    let sim = createMatch(42, ['you', 'opp'], [false, false]).players[0]
+    while (sim.alive) sim = stepPlayer(sim, ['hardDrop']).player
+    const deathTick = sim.tick
+    expect(deathTick % 5).not.toBe(0) // precondition: death lands OFF the batch boundary
+
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '1' }) }))
+    FakeWs.script = (ws) => humanStart(ws) // start only; no snap/end — local death drives the test
+
+    let tick = 0
+    const game = await import('../src/game.js')
+    vi.mocked(game.setupGame).mockImplementation(
+      async () =>
+        mockSetupGame({
+          drainInput: () => {
+            tick++
+            return ['hardDrop'] // post-death drains are discarded by the loop
+          },
+          quitRequested: () => tick > deathTick + 8,
+        }) as never,
+    )
+
+    const { runOnline } = await import('../src/online.js')
+    const resultPromise = runOnline({ server: 'http://s', name: 'you' })
+    await vi.advanceTimersByTimeAsync((deathTick + 12) * 50)
+    await resultPromise
+
+    const ws = FakeWs.instances.at(-1)!
+    const batches = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'input')
+    const last = batches.at(-1)!
+    expect(last.upTo).toBe(deathTick) // flushed AT death, not at the never-reached next boundary
+    expect(last.events).toContainEqual([deathTick, 5]) // the fatal hardDrop reached the server
+    // And nothing after it: the frozen clock never re-sends.
+    for (let i = 1; i < batches.length; i++) {
+      expect(batches[i].seq).toBeGreaterThan(batches[i - 1].seq)
+      expect(batches[i].upTo).toBeGreaterThan(batches[i - 1].upTo)
+    }
   })
 })
 
