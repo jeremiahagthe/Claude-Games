@@ -342,4 +342,61 @@ echo "$OUT5" | grep -q "fragwait" || fail "four-entry rotation pick 5 expected w
 grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "four-entry rotation state after pick 5 (wraparound) unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 echo "PASS: synthetic fragwait/checkwait/boomwait/snakewait four-game registry cycles 1->2->3->4->1 with snakewait cmd passthrough"
 
+# ------------------------------------------------------------------------
+# Test 11: five-entry registry (fragwait + checkwait + boomwait + snakewait +
+# blockwait, the shape games.json will have once blockwait ships in Task 13)
+# cycles 1 -> 2 -> 3 -> 4 -> 5 -> 1 on consecutive launches, and the
+# blockwait pick's cmd (npx -y blockwait@0.1.0) passes through to the tmux
+# shim untouched. games.json itself is NOT touched by this task -- this is a
+# synthetic fixture standing in for the post-release registry. NOTE: the
+# @0.1.0 pin here is synthetic (this test's fixture only) -- the real version
+# pin for games.json lands at release time in Task 13, same as snakewait's
+# @0.1.0 pin was synthetic in Test 10 until Task 12 shipped it for real.
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cat > "$T_ROOT/games.json" <<'JSON'
+{"games":[
+  {"id":"fragwait","title":"fragwait — terminal FPS deathmatch","cmd":"npx -y fragwait@0.1.4"},
+  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.7"},
+  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.2"},
+  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.0"},
+  {"id":"blockwait","title":"blockwait — terminal block-stacking duel","cmd":"npx -y blockwait@0.1.0"}
+]}
+JSON
+
+RECORD="$WORK/tmux_five_entry.txt"
+: > "$RECORD"
+OUT1=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT1" | grep -q "fragwait" || fail "five-entry rotation pick 1 expected fragwait, got: $OUT1"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 1 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT2=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT2" | grep -q "checkwait" || fail "five-entry rotation pick 2 expected checkwait, got: $OUT2"
+grep -q '"next":2' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 2 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT3=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT3" | grep -q "boomwait" || fail "five-entry rotation pick 3 expected boomwait, got: $OUT3"
+grep -q '"next":3' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 3 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT4=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT4" | grep -q "snakewait" || fail "five-entry rotation pick 4 expected snakewait, got: $OUT4"
+grep -q '"next":4' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 4 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT5=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT5" | grep -q "blockwait" || fail "five-entry rotation pick 5 expected blockwait, got: $OUT5"
+grep -q '"next":5' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 5 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+grep -qF "ARG:npx -y blockwait@0.1.0" "$RECORD" || fail "tmux shim did not receive the blockwait registry cmd: $(cat "$RECORD")"
+
+OUT6=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT6" | grep -q "fragwait" || fail "five-entry rotation pick 6 expected wraparound to fragwait, got: $OUT6"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 6 (wraparound) unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "PASS: synthetic fragwait/checkwait/boomwait/snakewait/blockwait five-game registry cycles 1->2->3->4->5->1 with blockwait cmd passthrough"
+
 echo "PASS: games-launch rotation + terminal-surface detection all behave"

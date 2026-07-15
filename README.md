@@ -176,6 +176,49 @@ draw a frame.
 | `Q` / `Esc` | Quit (requires a second press to confirm) |
 | `Ctrl-C` | Quit instantly |
 
+## blockwait — terminal block-stacking duel
+
+**Game 5: blockwait** — a 1v1 falling-block duel on a 10×20 board (plus 4
+hidden rows above the visible board for spawning). Gravity starts at 1
+cell/s and ramps up over the match, reaching its fastest pace of 10 cells/s
+once the clock hits 2:00. From that same 2:00 mark, sudden death kicks in:
+a neutral garbage row gets pushed into both boards every 5s, forcing the
+match to a finish by roughly 3:40 worst case. Clearing lines attacks your
+opponent — a double sends 1 row, a triple sends 2, and a tetris (four at
+once) sends 4; a single sends nothing. Incoming and outgoing attacks cancel
+each other out before landing. Online PvP via matchmaking by default — the
+lobby gathers players and bots backfill if no opponent shows up. Offline
+play drops you straight into a match against a bot instead.
+
+### Standalone play
+
+```
+npx -y blockwait
+```
+
+Add `--offline` to skip matchmaking and play a local match against a bot
+only, `--difficulty easy|normal|hard` to tune the bot (default `easy`),
+`--name <handle>` to set your display name, and `--server <url>` to point at
+a self-hosted worker (blockwait's matchmaking shares the same Cloudflare
+Worker deployment as fragwait's deathmatch, checkwait's matchmaking,
+boomwait's matchmaking, and snakewait's matchmaking).
+
+blockwait needs an 80×24 terminal at minimum — below that there's no room to
+draw a frame.
+
+### blockwait controls
+
+| Input | Action |
+|---|---|
+| `A`/`←`, `D`/`→` | Shift left/right |
+| `S`/`↓` | Soft drop |
+| `W`/`↑`, `X` | Rotate clockwise |
+| `Z` | Rotate counter-clockwise |
+| `Space` | Hard drop |
+| `C` | Hold |
+| `Q` / `Esc` | Quit (requires a second press to confirm) |
+| `Ctrl-C` | Quit instantly |
+
 ## How the Claude integration works
 
 `/games` is user-invoked only (`disable-model-invocation: true` — Claude
