@@ -366,6 +366,81 @@ describe('runOnline input batching', () => {
   })
 })
 
+// --- resync adoption vs the server's accepted floor (reviewer finding, fix round) ------------
+//
+// resyncFlag adoption can move the local clock BACKWARD (snapYou.tick < local.tick), but the
+// server's lastUpTo only ever climbs — any post-adoption event stamped at a tick ≤ our last
+// accepted upTo lands outside the server's (lastUpTo, upTo] window and drops the WHOLE batch
+// (block-match.ts applyOneBatch). This drives runOnline through exactly that sequence: batches at
+// upTo 5 and 10 (floor = 10) → past garbage (resyncFlag) → an older snap (adoption, clock rewind)
+// → more inputs → the next batch must stay server-acceptable: monotonic seq/upTo AND every event
+// tick strictly above the pre-adoption floor, with the inputs actually delivered (not dropped).
+
+describe('runOnline resync adoption (backward clock) keeps batches server-acceptable', () => {
+  it('post-adoption batches stamp every event above the pre-adoption sent floor', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '1' }) }))
+    FakeWs.script = (ws) => {
+      humanStart(ws)
+      // At ~560ms the local clock is at tick 11 (loop ticks every 50ms) and batches for upTo 5
+      // and 10 have been sent. Past garbage (atTick 8 ≤ 11) sets resyncFlag; the tick-3 snap
+      // (< 11) then triggers adoption — the backward-clock path under test.
+      setTimeout(() => {
+        ws.emitJson({ t: 'garbage', rows: 2, holeCol: 3, atTick: 8 })
+        ws.emitJson({ t: 'snap', state: seededWire(3) })
+      }, 560)
+    }
+
+    // 'left' on loop tick 2 (pre-adoption), 'right' on loop ticks 13 and 14 (post-adoption).
+    let tick = 0
+    const game = await import('../src/game.js')
+    vi.mocked(game.setupGame).mockImplementation(
+      async () =>
+        mockSetupGame({
+          drainInput: () => {
+            const t = ++tick
+            if (t === 2) return ['left']
+            if (t === 13 || t === 14) return ['right']
+            return []
+          },
+          quitRequested: () => tick > 30,
+        }) as never,
+    )
+
+    const { runOnline } = await import('../src/online.js')
+    const resultPromise = runOnline({ server: 'http://s', name: 'you' })
+    await vi.advanceTimersByTimeAsync(2000)
+    await resultPromise
+
+    const ws = FakeWs.instances.at(-1)!
+    const batches = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'input')
+    // Anchor the pre-adoption floor: first two batches are upTo 5 (carrying the 'left' at tick 2)
+    // and upTo 10.
+    expect(batches[0]).toMatchObject({ seq: 0, upTo: 5, events: [[2, 0]] })
+    expect(batches[1]).toMatchObject({ seq: 1, upTo: 10 })
+    const floor = 10
+
+    // Strictly monotonic seq and upTo across ALL batches (the server drops violations silently).
+    for (let i = 1; i < batches.length; i++) {
+      expect(batches[i].seq).toBeGreaterThan(batches[i - 1].seq)
+      expect(batches[i].upTo).toBeGreaterThan(batches[i - 1].upTo)
+    }
+
+    // Every post-adoption batch: all event ticks strictly above the floor AND within (floor, upTo]
+    // — i.e. the server's applyOneBatch would accept it, no silent input loss.
+    const post = batches.filter((b) => b.seq >= 2)
+    expect(post.length).toBeGreaterThan(0)
+    for (const b of post) {
+      for (const [t] of b.events) {
+        expect(t).toBeGreaterThan(floor)
+        expect(t).toBeLessThanOrEqual(b.upTo)
+      }
+    }
+    // And the post-adoption 'right' inputs (code 1) actually made it to the wire.
+    expect(post.flatMap((b) => b.events.map(([, c]: [number, number]) => c))).toContain(1)
+  })
+})
+
 // A tiny sanity check that queueGarbage/stepPlayer are the real core fns applyDueGarbage builds on
 // (guards against a future refactor stubbing them out).
 describe('applyDueGarbage integrates the real core queueGarbage', () => {

@@ -106,6 +106,12 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   let snapResult: Result | null = null
   // Pending, not-yet-batched input events, stamped [localTick, eventCode].
   let pendingEvents: [number, number][] = []
+  // The last upTo the server ACCEPTED from us (its lastUpTo is ≥ this, and only ever climbs).
+  // Hoisted here — not in the loop-local block below — because the snap-adoption path in onSnap
+  // needs it: adoption can rewind the local clock BELOW this floor, and any later event stamped
+  // at a tick ≤ it would land outside the server's (lastUpTo, upTo] batch window and silently
+  // drop the WHOLE batch (block-match.ts applyOneBatch).
+  let lastSentUpTo = 0
 
   let connected: Awaited<ReturnType<typeof BlockNetClient.connect>>
   try {
@@ -121,12 +127,24 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
         opp = fromWirePlayer(oppWire)
         const snapYou = fromWirePlayer(youWire)
         if (shouldAdoptSnap(you, snapYou, resyncFlag)) {
-          // Hard-replace local you-state from the authoritative snap; clear the resync latch and
-          // drop unsent events already covered by the snap's tick (the server has them or ran past
-          // them).
-          you = snapYou
+          // Hard-replace local you-state from the authoritative snap and clear the resync latch.
+          // Adoption can move the clock BACKWARD (a resync/death snap older than local), but the
+          // server's accepted floor (lastSentUpTo, and its own lastUpTo above that) never moves
+          // back — so events must never again stamp at or below it:
+          //   • fast-forward the adopted state to lastSentUpTo with empty-event ticks, so every
+          //     future event stamps at t > lastSentUpTo, a floor the server has provably accepted;
+          //   • drop unsent events at or below max(snap tick, lastSentUpTo) — the server has them,
+          //     ran past them, or would reject them.
+          // Residual race: a CONCURRENT server force-advance can push its lastUpTo above our
+          // lastSentUpTo between this adoption and our next batch, which would still drop that one
+          // batch. It's narrow (only while we're > LAG_TICKS behind), bounded (one batch), and
+          // self-heals: the force-advanced snap satisfies trigger (2) and re-adopts us forward.
+          let adopted = snapYou
+          while (adopted.alive && adopted.tick < lastSentUpTo) adopted = stepPlayer(adopted, []).player
+          you = adopted
           resyncFlag = false
-          pendingEvents = pendingEvents.filter(([t]) => t > snapYou.tick)
+          const floor = Math.max(snapYou.tick, lastSentUpTo)
+          pendingEvents = pendingEvents.filter(([t]) => t > floor)
         }
       },
       onGarbage(msg) {
@@ -163,10 +181,9 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   let lastTick = you.tick
   let lastLines = you.linesCleared
   let lastSent = you.linesSent
-  // Batch bookkeeping: strictly-monotonic seq, and the last upTo we sent (so a frozen clock after
-  // death never re-sends a stale, non-monotonic batch the server would just drop).
+  // Batch bookkeeping: strictly-monotonic seq (lastSentUpTo is hoisted above connect — the
+  // adoption path needs it).
   let seq = 0
-  let lastSentUpTo = 0
 
   const redraw = (): void => {
     const layout = session.layout()
@@ -189,12 +206,15 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
       // Step YOUR board locally with this tick's events (capped to what stepPlayer applies), then
-      // stamp those applied events at the new local tick for the next batch.
-      const events = session.drainInput().slice(0, MAX_EVENTS_PER_TICK)
+      // stamp those applied events at the new local tick for the next batch. Once dead the clock
+      // is frozen and stepPlayer ignores events — drain the queue (so keys don't pile up) but stop
+      // accumulating: pendingEvents would otherwise grow without bound on a dead board.
+      const wasAlive = you!.alive
+      const events = wasAlive ? session.drainInput().slice(0, MAX_EVENTS_PER_TICK) : (session.drainInput(), [])
       const out = stepPlayer(you!, events)
       you = out.player
       const localTick = you.tick
-      for (const ev of events) pendingEvents.push([localTick, EVENT_CODES.indexOf(ev)])
+      if (wasAlive) for (const ev of events) pendingEvents.push([localTick, EVENT_CODES.indexOf(ev)])
 
       // Materialize any scheduled garbage the local clock has now reached.
       const due = applyDueGarbage(you, scheduled)
@@ -210,8 +230,11 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
 
       // Batch cadence: flush accumulated events every BATCH_TICKS. The lastSentUpTo guard keeps
       // upTo strictly monotonic (a dead player's frozen clock must never re-send the same upTo).
+      // The event filter is belt-and-braces for the adoption path above: no event at or below the
+      // server's accepted floor may ever ride in a batch — one such event drops the whole batch
+      // server-side (silent input loss).
       if (batchDue(localTick) && localTick > lastSentUpTo) {
-        net.sendInput({ t: 'input', seq: seq++, upTo: localTick, events: pendingEvents })
+        net.sendInput({ t: 'input', seq: seq++, upTo: localTick, events: pendingEvents.filter(([t]) => t > lastSentUpTo) })
         pendingEvents = []
         lastSentUpTo = localTick
       }
