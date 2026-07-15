@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { createMatch, MAX_PLAYERS, parseSnakeServerMsg, type SnakeServerMsg, type MatchState } from 'snakewait-core'
-import { SnakeLobbyQueue, type LobbyOutcome } from '../src/snake-lobby.js'
+import { createMatch, fromWire, isWall, MAX_PLAYERS, parseSnakeServerMsg, type SnakeServerMsg, type MatchState } from 'snakewait-core'
+import { SnakeLobbyQueue, SnakeLobbyDO, type LobbyOutcome } from '../src/snake-lobby.js'
 import { SnakeMatchDO, SnakeMatchHost, parseSnakeMatchId, type SnakeConn } from '../src/snake-match.js'
 
 function conn(): SnakeConn & { sent: string[] } {
@@ -66,6 +66,35 @@ describe('parseSnakeMatchId', () => {
     expect(parseSnakeMatchId(`/snake/match/${VALID_ID}f/ws`)).toBeNull()
     expect(parseSnakeMatchId('/snake/match//ws')).toBeNull()
     expect(parseSnakeMatchId('/match/abc123/ws')).toBeNull()
+  })
+})
+
+describe('SnakeLobbyDO', () => {
+  it('POST /snake/join with an empty {} body → 400 (absent name)', async () => {
+    vi.stubGlobal('Response', class { constructor(public body: unknown, public init: unknown) {} })
+    try {
+      const doInst = new SnakeLobbyDO({} as unknown as DurableObjectState, { SNAKE_MATCH: {} } as never)
+      const res = (await doInst.fetch({ method: 'POST', json: async () => ({}) } as unknown as Request)) as unknown as { init: { status: number } }
+      expect(res.init.status).toBe(400)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('POST /snake/join with a malformed / missing body → 400 (never throws)', async () => {
+    vi.stubGlobal('Response', class { constructor(public body: unknown, public init: unknown) {} })
+    try {
+      const doInst = new SnakeLobbyDO({} as unknown as DurableObjectState, { SNAKE_MATCH: {} } as never)
+      const res = (await doInst.fetch({
+        method: 'POST',
+        json: async () => {
+          throw new Error('bad json')
+        },
+      } as unknown as Request)) as unknown as { init: { status: number } }
+      expect(res.init.status).toBe(400)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 
@@ -159,7 +188,7 @@ describe('SnakeMatchHost', () => {
     expect(host.tick().type).toBe('running')
   })
 
-  it('disconnect starts a 5s grace, then the snake dies in-sim and decays to food via killSnake', () => {
+  it('disconnect starts a 5s grace, then the snake dies in-sim and decays to food specifically at its own even-indexed pre-death corpse cells (not merely "food exists somewhere")', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000_000)
     try {
@@ -177,14 +206,38 @@ describe('SnakeMatchHost', () => {
       let mine = snap.state.snakes.find((s) => s[0] === 0)!
       expect(mine[3]).toBe(1) // still alive: grace not elapsed yet
 
+      // Reconstruct the about-to-die snake's real cell list from this pre-death snapshot
+      // (killSnake fires at the TOP of the next tick(), before step() moves anything, so
+      // these are exactly the cells the corpse-food rule will consume) and record the food
+      // set as it stood before the kill. Vacuity check: assert against ONLY the initial food
+      // (the bug this replaces) would trivially pass here too, since food already exists at
+      // t+4000 -- proving the old assertion never actually exercised the corpse-food rule.
+      const foodBefore = new Set(snap.state.food.map(([x, y]) => `${x},${y}`))
+      expect(foodBefore.size).toBeGreaterThan(0) // the vacuous old assertion's target: initial food already present here
+      const preDeathSnake = fromWire(snap.state).snakes.find((s) => s.id === 0)!
+      const expectedCorpseCells = new Set<string>()
+      for (let ci = 0; ci < preDeathSnake.cells.length; ci += 2) {
+        const c = preDeathSnake.cells[ci]!
+        const key = `${c.x},${c.y}`
+        if (!isWall(c.x, c.y, fromWire(snap.state).rings) && !foodBefore.has(key)) expectedCorpseCells.add(key)
+      }
+      expect(expectedCorpseCells.size).toBeGreaterThan(0) // non-vacuity: there's a real corpse-cell set to prove landing on
+
       vi.setSystemTime(1_000_000 + 5_100)
       host.tick()
       snap = lastMsg(c1)
       if (snap.t !== 'snap') throw new Error('expected snap')
       mine = snap.state.snakes.find((s) => s[0] === 0)!
       expect(mine[3]).toBe(0) // dead: grace elapsed
-      const foodCells = new Set(snap.state.food.map(([x, y]) => `${x},${y}`))
-      expect(foodCells.size).toBeGreaterThan(0) // corpse decayed to food
+
+      const foodAfter = new Set(snap.state.food.map(([x, y]) => `${x},${y}`))
+      const newFood = new Set([...foodAfter].filter((k) => !foodBefore.has(k)))
+      expect(newFood.size).toBeGreaterThan(0) // corpse decayed to NEW food (not just pre-existing food)
+      // The exact set of new food cells must equal the dead snake's own even-indexed
+      // pre-death corpse cells -- this would FAIL if the corpse-food rule were broken (e.g.
+      // no food appearing, food appearing at the wrong/odd-indexed cells, or at some other
+      // snake's cells), unlike the old assertion which only checked food.length > 0.
+      expect(newFood).toEqual(expectedCorpseCells)
     } finally {
       vi.useRealTimers()
     }

@@ -77,11 +77,17 @@ export class SnakeLobbyDO implements DurableObject {
   async fetch(req: Request): Promise<Response> {
     if (req.method !== 'POST') return new Response('method', { status: 405 })
     // The client's name is re-sent over the ws 'hello' once connected (see snake-match.ts);
-    // the lobby itself doesn't need it, so a garbage/absent body must never throw here.
+    // the lobby itself doesn't strictly need it here, but a missing/malformed body or absent
+    // name must never throw on a public endpoint (the snakewait CF-1101 lesson) -- parse
+    // defensively and return an explicit 400, exactly matching block-lobby.ts's join contract.
+    let body: unknown
     try {
-      await req.json()
+      body = await req.json()
     } catch {
-      /* empty/garbage body is fine */
+      return new Response('bad request', { status: 400 })
+    }
+    if (typeof body !== 'object' || body === null || typeof (body as { name?: unknown }).name !== 'string') {
+      return new Response('bad request', { status: 400 })
     }
     const candidateMatchId = this.env.SNAKE_MATCH.newUniqueId().toString()
     const outcome = await new Promise<LobbyOutcome>((resolve) => {
