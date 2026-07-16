@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMatch, queueGarbage, stepPlayer, toWire, type GarbageMsg, type PlayerState } from 'blockwait-core'
-import { applyDueGarbage, applyGarbageMsg, batchDue, classifyGarbage, composeMatchState, shouldAdoptSnap } from '../src/online.js'
+import { applyDueGarbage, applyGarbageMsg, catchUpSteps, classifyGarbage, composeMatchState, flushDue, MAX_CATCHUP_STEPS, shouldAdoptSnap, tickTarget } from '../src/online.js'
 
 // ---------------------------------------------------------------------------
 // Pure exported helpers — the resync/garbage/batch semantics pinned in the plan.
@@ -13,11 +13,46 @@ function playerAt(tick: number, alive = true): PlayerState {
   return { ...p, tick, alive }
 }
 
-describe('batchDue', () => {
-  it('is true only on multiples of BATCH_TICKS (5)', () => {
-    expect([0, 1, 2, 3, 4, 5, 6, 9, 10, 15].map(batchDue)).toEqual([
-      true, false, false, false, false, true, false, false, true, true,
-    ])
+describe('tickTarget (wall-time-anchored local clock)', () => {
+  it('derives the target tick from real elapsed time, not timer-fire counts', () => {
+    const anchor = 1_000_000
+    // 74s elapsed at 20Hz → tick 1480 exactly, regardless of how many times the
+    // timer actually fired (Node setInterval measured ~0.5 ticks/sec late — a
+    // count-based clock would sit ~37 ticks behind here, past LAG_TICKS=25, and
+    // the server's empty-input force-advance would erase recent local inputs).
+    expect(tickTarget(anchor + 74_000, anchor, 0)).toBe(1480)
+  })
+
+  it('floors sub-tick elapsed time and respects a non-zero anchor tick', () => {
+    const anchor = 5_000
+    expect(tickTarget(anchor + 49, anchor, 0)).toBe(0)
+    expect(tickTarget(anchor + 50, anchor, 0)).toBe(1)
+    expect(tickTarget(anchor + 149, anchor, 7)).toBe(9)
+  })
+})
+
+describe('catchUpSteps (bounded steps per timer fire)', () => {
+  it('steps once per fire when on schedule, zero when at/ahead of the target', () => {
+    expect(catchUpSteps(11, 10)).toBe(1)
+    expect(catchUpSteps(10, 10)).toBe(0)
+    expect(catchUpSteps(9, 10)).toBe(0) // local ahead (post-adoption) → idle until wall catches up
+  })
+
+  it('catches up a small deficit fully, but caps a large one at 1 + MAX_CATCHUP_STEPS', () => {
+    expect(catchUpSteps(13, 10)).toBe(3)
+    expect(catchUpSteps(500, 10)).toBe(1 + MAX_CATCHUP_STEPS) // event-loop stall: spread across fires
+  })
+})
+
+describe('flushDue (batch cadence by distance from the accepted floor)', () => {
+  it('fires once the local clock is BATCH_TICKS (5) past lastSentUpTo', () => {
+    expect(flushDue(4, 0)).toBe(false)
+    expect(flushDue(5, 0)).toBe(true)
+    expect(flushDue(9, 5)).toBe(false)
+    expect(flushDue(10, 5)).toBe(true)
+    // A catch-up burst can jump PAST a %-boundary — distance, unlike tick % 5,
+    // still fires (tick 12 with floor 5 crossed boundary 10 mid-burst).
+    expect(flushDue(12, 5)).toBe(true)
   })
 })
 
@@ -541,7 +576,8 @@ describe('runOnline past-atTick garbage without an intervening lock', () => {
 
 // --- final batch flush on death (finding #2) --------------------------------------------------
 //
-// Death freezes the local clock, so batchDue (tick % BATCH_TICKS === 0) never fires again — if
+// Death freezes the local clock, so flushDue (tick - lastSentUpTo >= BATCH_TICKS) may never fire
+// again — if
 // death lands off a batch boundary, the fatal hardDrop (and the attack a same-lock clear routed)
 // would never reach the server. The loop must flush the partial batch the instant alive flips.
 

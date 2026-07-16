@@ -31,9 +31,35 @@ export interface OnlineOpts {
   server: string
 }
 
-// A batch is due at every BATCH_TICKS boundary of the local clock (0,5,10,…). Exported for tests.
-export function batchDue(tick: number): boolean {
-  return tick % BATCH_TICKS === 0
+// Wall-time-anchored local clock. The local board must tick at TRUE 20Hz: Node's setInterval
+// accumulates lateness (~0.5 ticks/sec measured under a render-sized workload), while the server's
+// wallTick is elapsed-time-derived (59e58f2). A count-one-tick-per-fire clock therefore drifts
+// behind wallTick until the gap passes LAG_TICKS (25 ≈ 50s of play), the server force-advances our
+// board with EMPTY inputs, the next snap satisfies adoption trigger (2) (snap.tick >= local.tick),
+// and adoption erases recent local inputs — the piece visibly snaps back to its spawn column.
+// Deriving the target tick from elapsed time pins upTo to real time so force-advance never engages
+// on a healthy connection. Exported for tests.
+export function tickTarget(nowMs: number, anchorMs: number, anchorTick: number): number {
+  return anchorTick + Math.floor((nowMs - anchorMs) / REDRAW_MS)
+}
+
+// Cap on EXTRA catch-up steps in one timer fire (beyond the normal single step), so an event-loop
+// stall (debugger pause, terminal freeze) is repaid across several fires instead of one giant
+// frozen frame. 5 extra/fire = up to 120 ticks/sec of catch-up — far above any organic drift.
+export const MAX_CATCHUP_STEPS = 5
+
+// How many local steps this fire runs: enough to reach the wall-time target, at least 0 (a
+// post-adoption clock AHEAD of wall time idles until real time catches up), at most
+// 1 + MAX_CATCHUP_STEPS. Exported for tests.
+export function catchUpSteps(target: number, localTick: number): number {
+  return Math.min(Math.max(target - localTick, 0), 1 + MAX_CATCHUP_STEPS)
+}
+
+// A batch is due once the local clock is BATCH_TICKS past the accepted floor. Distance, not
+// tick % BATCH_TICKS: a multi-step catch-up burst can jump PAST a %-boundary and a boundary test
+// would silently defer the flush a full extra window. Exported for tests.
+export function flushDue(localTick: number, lastSentUpTo: number): boolean {
+  return localTick - lastSentUpTo >= BATCH_TICKS
 }
 
 // The THREE pinned snap-adoption triggers. A snap of our OWN board normally lags local (uplink
@@ -244,42 +270,54 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
   session.term.installExitGuards(() => net.close())
   redraw()
 
+  const anchorMs = Date.now()
+  const anchorTick = you.tick
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
-      // Step YOUR board locally with this tick's events (capped to what stepPlayer applies), then
-      // stamp those applied events at the new local tick for the next batch. Once dead the clock
-      // is frozen and stepPlayer ignores events — drain the queue (so keys don't pile up) but stop
-      // accumulating: pendingEvents would otherwise grow without bound on a dead board.
+      // Step YOUR board locally toward the WALL-TIME tick target (see tickTarget: a per-fire
+      // counting clock drifts behind the server's real-time wallTick and gets force-advanced).
+      // Normally one step per fire; occasionally two to repay timer lateness; zero when a snap
+      // adoption left the local clock ahead of real time. Drained events (capped to what
+      // stepPlayer applies) ride the FIRST step and stamp at its resulting tick; catch-up steps
+      // are empty-input. Once dead the clock is frozen and stepPlayer ignores events — run the
+      // single frozen step (draining the queue so keys don't pile up) but stop accumulating:
+      // pendingEvents would otherwise grow without bound on a dead board.
       const wasAlive = you!.alive
-      const events = wasAlive ? session.drainInput().slice(0, MAX_EVENTS_PER_TICK) : (session.drainInput(), [])
-      const out = stepPlayer(you!, events)
-      you = out.player
-      const localTick = you.tick
-      if (out.locked) lastLockTick = localTick // onGarbage's divergence test reads this
-      if (wasAlive) for (const ev of events) pendingEvents.push([localTick, EVENT_CODES.indexOf(ev)])
+      const steps = wasAlive ? catchUpSteps(tickTarget(Date.now(), anchorMs, anchorTick), you!.tick) : 1
+      for (let i = 0; i < steps; i++) {
+        const events =
+          i > 0 ? [] : wasAlive ? session.drainInput().slice(0, MAX_EVENTS_PER_TICK) : (session.drainInput(), [])
+        const out = stepPlayer(you!, events)
+        you = out.player
+        if (out.locked) lastLockTick = you.tick // onGarbage's divergence test reads this
+        if (wasAlive) for (const ev of events) pendingEvents.push([you.tick, EVENT_CODES.indexOf(ev)])
 
-      // Materialize any scheduled garbage the local clock has now reached.
-      const due = applyDueGarbage(you, scheduled)
-      you = due.you
-      scheduled.length = 0
-      scheduled.push(...due.remaining)
+        // Materialize any scheduled garbage the local clock has now reached — inside the step
+        // loop, so a catch-up burst queues garbage before the later steps that could lock a piece.
+        const due = applyDueGarbage(you, scheduled)
+        you = due.you
+        scheduled.length = 0
+        scheduled.push(...due.remaining)
+      }
+      const localTick = you!.tick
 
-      if (you.alive) {
-        lastTick = you.tick
-        lastLines = you.linesCleared
-        lastSent = you.linesSent
+      if (you!.alive) {
+        lastTick = you!.tick
+        lastLines = you!.linesCleared
+        lastSent = you!.linesSent
       }
 
-      // Batch cadence: flush accumulated events every BATCH_TICKS — OR the instant we die. Death
-      // freezes the local clock, so batchDue would never fire again; without the flush, a death
-      // landing off a batch boundary strands the fatal hardDrop (and the attack a same-lock clear
-      // routed) in pendingEvents forever and the server never sees it. The lastSentUpTo guard
-      // keeps upTo strictly monotonic (a dead player's frozen clock must never re-send the same
-      // upTo — it also makes the death flush one-shot). The event filter is belt-and-braces for
-      // the adoption path above: no event at or below the server's accepted floor may ever ride
-      // in a batch — one such event drops the whole batch server-side (silent input loss).
-      const diedThisTick = wasAlive && !you.alive
-      if ((batchDue(localTick) || diedThisTick) && localTick > lastSentUpTo) {
+      // Batch cadence: flush accumulated events every BATCH_TICKS of clock progress — OR the
+      // instant we die. Death freezes the local clock, so flushDue may never fire again; without
+      // the flush, a death landing off a batch boundary strands the fatal hardDrop (and the attack
+      // a same-lock clear routed) in pendingEvents forever and the server never sees it. The
+      // lastSentUpTo guard keeps upTo strictly monotonic (a dead player's frozen clock must never
+      // re-send the same upTo — it also makes the death flush one-shot). The event filter is
+      // belt-and-braces for the adoption path above: no event at or below the server's accepted
+      // floor may ever ride in a batch — one such event drops the whole batch server-side (silent
+      // input loss).
+      const diedThisTick = wasAlive && !you!.alive
+      if ((flushDue(localTick, lastSentUpTo) || diedThisTick) && localTick > lastSentUpTo) {
         net.sendInput({ t: 'input', seq: seq++, upTo: localTick, events: pendingEvents.filter(([t]) => t > lastSentUpTo) })
         pendingEvents = []
         lastSentUpTo = localTick
