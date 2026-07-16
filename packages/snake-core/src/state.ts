@@ -29,6 +29,16 @@ export interface Input {
 
 export type Result = { kind: 'win'; winner: number } | { kind: 'draw' }
 
+// Direction tables shared across the core (step / bot / protocol). OPPOSITE maps a
+// heading to its 180-reverse; DELTA maps a heading to its per-tick grid step.
+export const OPPOSITE: Record<Dir, Dir> = { up: 'down', down: 'up', left: 'right', right: 'left' }
+export const DELTA: Record<Dir, Cellxy> = {
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+}
+
 export interface MatchState {
   tick: number
   stepCooldown: number

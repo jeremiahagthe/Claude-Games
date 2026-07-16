@@ -6,16 +6,8 @@ import {
   SHRINK_START_TICK,
 } from './constants.js'
 import { randStep } from './prng.js'
-import type { Cellxy, Dir, Food, Input, MatchState, Result, SnakeState } from './state.js'
-import { idx, isWall, stepTicksAt } from './state.js'
-
-const OPPOSITE: Record<Dir, Dir> = { up: 'down', down: 'up', left: 'right', right: 'left' }
-const DELTA: Record<Dir, Cellxy> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 },
-}
+import type { Cellxy, Food, Input, MatchState, Result, SnakeState } from './state.js'
+import { DELTA, idx, isWall, OPPOSITE, stepTicksAt } from './state.js'
 
 const MAX_RESPAWN_ATTEMPTS = 200
 const MAX_RINGS = Math.min(GRID_W, GRID_H) / 2 // 20 — grid fully closed at this ring count
@@ -26,6 +18,24 @@ function ringsAt(tick: number): number {
   if (tick < SHRINK_START_TICK) return 0
   const rings = 1 + Math.floor((tick - SHRINK_START_TICK) / SHRINK_INTERVAL_TICKS)
   return Math.min(rings, MAX_RINGS)
+}
+
+// Corpse-food rule: a dead snake's even-indexed pre-death body cells decay to food,
+// skipping cells that are wall (in the given ring count) or already carry food. Returns a
+// new food array (input is never mutated); pushes the ORIGINAL cell objects, matching the
+// three call sites this replaces (applyShrink / killSnake / step Phase 7).
+function corpseFoodFor(cells: Cellxy[], food: Food[], rings: number): Food[] {
+  const next = food.slice()
+  const foodSet = new Set(next.map((f) => idx(f.x, f.y)))
+  for (let ci = 0; ci < cells.length; ci += 2) {
+    const c = cells[ci]!
+    if (isWall(c.x, c.y, rings)) continue
+    const cIdx = idx(c.x, c.y)
+    if (foodSet.has(cIdx)) continue
+    next.push(c)
+    foodSet.add(cIdx)
+  }
+  return next
 }
 
 // Sudden-death shrink: any alive snake with a cell inside the newly closed ring dies
@@ -48,15 +58,7 @@ function applyShrink(
     const hitsRing = snake.cells.some((c) => isWall(c.x, c.y, newRings))
     if (!hitsRing) continue
 
-    const foodSet = new Set(nextFood.map((f) => idx(f.x, f.y)))
-    for (let ci = 0; ci < snake.cells.length; ci += 2) {
-      const c = snake.cells[ci]!
-      if (isWall(c.x, c.y, newRings)) continue
-      const cIdx = idx(c.x, c.y)
-      if (foodSet.has(cIdx)) continue
-      nextFood = [...nextFood, c]
-      foodSet.add(cIdx)
-    }
+    nextFood = corpseFoodFor(snake.cells, nextFood, newRings)
 
     nextSnakes = nextSnakes.map((s) =>
       s.id === snake.id ? { ...s, alive: false, pendingDir: null, cells: [] } : s,
@@ -84,16 +86,7 @@ export function killSnake(state: MatchState, id: number): MatchState {
   const snake = state.snakes.find((s) => s.id === id)
   if (!snake || !snake.alive) return state
 
-  const food = state.food.slice()
-  const foodSet = new Set(food.map((f) => idx(f.x, f.y)))
-  for (let ci = 0; ci < snake.cells.length; ci += 2) {
-    const c = snake.cells[ci]!
-    if (isWall(c.x, c.y, state.rings)) continue
-    const cIdx = idx(c.x, c.y)
-    if (foodSet.has(cIdx)) continue
-    food.push(c)
-    foodSet.add(cIdx)
-  }
+  const food = corpseFoodFor(snake.cells, state.food, state.rings)
 
   const snakes = state.snakes.map((s) => (s.id === id ? { ...s, alive: false, pendingDir: null, cells: [] } : s))
   return { ...state, snakes, food }
@@ -254,15 +247,7 @@ export function step(state: MatchState, inputs: (Input | null)[]): MatchState {
   for (let i = 0; i < snakesAfterInput.length; i++) {
     const snake = snakesAfterInput[i]!
     if (!deadIds.has(snake.id)) continue
-    const foodSet = new Set(food.map((f) => idx(f.x, f.y)))
-    for (let ci = 0; ci < snake.cells.length; ci += 2) {
-      const c = snake.cells[ci]!
-      if (isWall(c.x, c.y, state.rings)) continue
-      const cIdx = idx(c.x, c.y)
-      if (foodSet.has(cIdx)) continue
-      food.push(c)
-      foodSet.add(cIdx)
-    }
+    food = corpseFoodFor(snake.cells, food, state.rings)
   }
 
   // Phase 8: shrink (after movement/deaths, before result stamp — shrink kills count this tick)

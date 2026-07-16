@@ -223,6 +223,17 @@ describe('parseSnakeServerMsg', () => {
     expect(parseSnakeServerMsg(JSON.stringify({ t: 'snap', state: tampered }))).toBeNull()
   })
 
+  it('rejects a snap whose segment counts SUM exceeds GRID_CELLS (cumulative body cap)', () => {
+    const good = toWire(midMatchState())
+    const snake0 = good.snakes[0]! as unknown[]
+    // Each segment count is individually valid (≤ GRID_CELLS) and there are only 2
+    // segments (≤ GRID_CELLS), so every existing per-field check passes — but the SUM
+    // decodes into ~4000 cells, far more than the grid holds (GRID_W*GRID_H = 2240).
+    const tampered = { ...good, snakes: [[...snake0.slice(0, 9), [[1, 2000], [2, 2000]]]] }
+    expect(GRID_W * GRID_H).toBe(2240)
+    expect(parseSnakeServerMsg(JSON.stringify({ t: 'snap', state: tampered }))).toBeNull()
+  })
+
   it('rejects a snap with a malformed or truncated WireState', () => {
     const good = toWire(midMatchState())
     expect(parseSnakeServerMsg(JSON.stringify({ t: 'snap', state: { ...good, tick: -1 } }))).toBeNull()

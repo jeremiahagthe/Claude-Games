@@ -1,7 +1,7 @@
 import { GRID_H, GRID_W, SHRINK_INTERVAL_TICKS, SHRINK_START_TICK } from './constants.js'
 import { mulberry32 } from './prng.js'
 import type { Cellxy, Dir, Input, MatchState } from './state.js'
-import { idx, isWall } from './state.js'
+import { DELTA, idx, isWall, OPPOSITE } from './state.js'
 
 export type Difficulty = 'easy' | 'normal' | 'hard'
 
@@ -13,13 +13,6 @@ export interface BotMind {
 const CADENCE: Record<Difficulty, number> = { easy: 10, normal: 5, hard: 3 }
 const EASY_MISTAKE_RATE = 0.15
 
-const OPPOSITE: Record<Dir, Dir> = { up: 'down', down: 'up', left: 'right', right: 'left' }
-const DELTA: Record<Dir, Cellxy> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 },
-}
 // Fixed canonical order for deterministic tie-breaking.
 const ALL_DIRS: Dir[] = ['up', 'down', 'left', 'right']
 

@@ -1,10 +1,10 @@
 {
   "name": "snakewait",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
   "bin": { "snakewait": "bin/snakewait.js" },
   "files": ["dist", "bin"],
   "scripts": { "build": "tsc -p tsconfig.json" },
-  "dependencies": { "snakewait-core": "0.1.0", "termwait": "0.1.0", "ws": "8.21.0" }
+  "dependencies": { "snakewait-core": "0.1.1", "termwait": "0.1.0", "ws": "8.21.0" }
 }

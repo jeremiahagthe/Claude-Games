@@ -40,6 +40,11 @@ describe('createMatch', () => {
   it('tick 0, rings 0, no result, cooldown = stepTicksAt(0)', () => {
     expect(s).toMatchObject({ tick: 0, rings: 0, result: null, stepCooldown: stepTicksAt(0) })
   })
+  it('throws when names or bots length !== MAX_PLAYERS', () => {
+    expect(() => createMatch(1, ['a', 'b', 'c'], BOTS)).toThrow()
+    expect(() => createMatch(1, NAMES, [true, true, true])).toThrow()
+    expect(() => createMatch(1, [...NAMES, 'e'], BOTS)).toThrow()
+  })
 })
 
 describe('helpers', () => {

@@ -11,6 +11,9 @@ export const SPAWNS: { cells: Cellxy[]; dir: Dir }[] = [
 ]
 
 export function createMatch(seed: number, names: string[], bots: boolean[]): MatchState {
+  if (names.length !== MAX_PLAYERS || bots.length !== MAX_PLAYERS) {
+    throw new Error(`createMatch: expected ${MAX_PLAYERS} names and ${MAX_PLAYERS} bots`)
+  }
   // Create snakes at spawn points
   const snakes: SnakeState[] = []
   for (let i = 0; i < MAX_PLAYERS; i++) {

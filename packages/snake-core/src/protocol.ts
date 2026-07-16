@@ -1,5 +1,6 @@
 import { GRID_H, GRID_W, MAX_PLAYERS } from './constants.js'
-import type { Cellxy, Dir, Food, Input, MatchState, Result, SnakeState } from './state.js'
+import { DELTA } from './state.js'
+import type { Cellxy, Dir, Food, MatchState, Result, SnakeState } from './state.js'
 
 export const MAX_RAW = 4096 // inbound size cap (matches fragwait/bomber-core), applied both directions
 
@@ -64,12 +65,6 @@ export function sanitizeHandle(raw: string): string {
 }
 
 const DIR_LIST: Dir[] = ['up', 'down', 'left', 'right']
-const DELTA: Record<Dir, Cellxy> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 },
-}
 const GRID_CELLS = GRID_W * GRID_H
 const MAX_NAME_LEN = 24
 // Generous-but-finite cap on wire growth magnitude — no legitimate value comes
@@ -240,6 +235,19 @@ function isSegment(v: unknown): v is [number, number] {
   )
 }
 
+// Cumulative body-cell cap: each segment count is individually bounded (1..GRID_CELLS)
+// and segments.length is bounded, but the SUM of the counts is the real decoded body
+// length. Without this a small snap (few segments, each near the per-field max) could
+// force fromWire to build millions of cells. Assumes every entry already passed isSegment.
+function segmentTotalOk(segments: [number, number][]): boolean {
+  let total = 0
+  for (const [, count] of segments) {
+    total += count
+    if (total > GRID_CELLS) return false
+  }
+  return true
+}
+
 function isWireSnake(v: unknown): v is WireSnake {
   if (!Array.isArray(v) || v.length !== 10) return false
   const [id, name, bot, alive, dirCode, pendCode, growth, headX, headY, segments] = v
@@ -256,7 +264,8 @@ function isWireSnake(v: unknown): v is WireSnake {
     isCoordY(headY) &&
     Array.isArray(segments) &&
     segments.length <= GRID_CELLS &&
-    segments.every(isSegment)
+    segments.every(isSegment) &&
+    segmentTotalOk(segments as [number, number][])
   )
 }
 
