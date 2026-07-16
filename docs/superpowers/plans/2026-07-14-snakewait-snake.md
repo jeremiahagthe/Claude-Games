@@ -534,7 +534,7 @@ export function parseSnakeServerMsg(raw: unknown): SnakeServerMsg | null
 ```
 RLE: body cells after the head encoded as (dirCode, count) segments walking HEAD → TAIL (each segment's dir points from a cell to the NEXT cell toward the tail). fromWire reconstructs by walking from the head. Parser hardening (the boomwait Task 7 lesson): coordinates capped to grid bounds, counts capped to GRID_W*GRID_H, string fields length-capped, anything malformed → null, and NO literal control bytes in the test file (escape sequences only — a binary test file broke git review once).
 
-- [ ] **Step 1:** Write failing `test/protocol.test.ts` covering: round-trip `fromWire(toWire(s))` equals s for a mid-match state (createMatch stepped 100 ticks with scripted turns — reuse Task 4's SCRIPT shape); a straight snake of length 10 encodes as ONE segment `[dirCode, 9]`; snapshot size pin — a worst case with 4 fully-twisty snakes of length 60 (staircase pattern) + 40 food serializes under 2048 bytes (`JSON.stringify(toWire(worst)).length < 2048`); parser rejects: oversized raw (> MAX_RAW), `dir: 'diagonal'`, coords 999999999, segment count 10^9, non-JSON garbage `' '`, valid-JSON-wrong-shape.
+- [ ] **Step 1:** Write failing `test/protocol.test.ts` covering: round-trip `fromWire(toWire(s))` equals s for a mid-match state (createMatch stepped 100 ticks with scripted turns — reuse Task 4's SCRIPT shape); a straight snake of length 10 encodes as ONE segment `[dirCode, 9]`; snapshot size pin — a worst case with 4 fully-twisty snakes of length 60 (staircase pattern) + 40 food serializes under 2048 bytes (`JSON.stringify(toWire(worst)).length < 2048`); parser rejects: oversized raw (> MAX_RAW), `dir: 'diagonal'`, coords 999999999, segment count 10^9, non-JSON garbage `'\x00\x01'`, valid-JSON-wrong-shape.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** PASS, suite green. **Step 5:** Ledger + commit `feat(snake-core): wire protocol — RLE codec + hardened parsers`.
 
 ---
@@ -585,7 +585,7 @@ describe('the 80x24 gate (asserted, never eyeballed)', () => {
     const lines = frame.split('\n')
     expect(lines.length).toBeLessThanOrEqual(23)
     for (const line of lines) {
-      const visible = line.replace(/\[[0-9;]*m/g, '')
+      const visible = line.replace(/\x1b\[[0-9;]*m/g, '')
       expect(visible.length, JSON.stringify(visible)).toBeLessThanOrEqual(80)
     }
     expect(lines.some((l) => l.includes('jeremiah'))).toBe(true)
