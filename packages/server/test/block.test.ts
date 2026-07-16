@@ -49,6 +49,13 @@ function peekState(host: BlockMatchHost): MatchState {
 function setState(host: BlockMatchHost, s: MatchState): void {
   ;(host as unknown as { state: MatchState }).state = s
 }
+// The wall clock zero recorded at start() — clients receive StartMsg and start their own tick 0 at
+// this instant, so a test drives tick(nowMs) with nowMs = startMs + serverTick * TICK_MS to place
+// the server at an intended wall tick.
+function peekStartMs(host: BlockMatchHost): number {
+  return (host as unknown as { startMs: number }).startMs
+}
+const T_MS = 1000 / 20 // 50ms wall tick, mirrors the host's TICK_MS
 
 describe('BlockLobbyQueue', () => {
   it('the 2nd joiner fills the room — both waiters resolve immediately, humanCount 2', () => {
@@ -158,7 +165,8 @@ describe('BlockMatchHost', () => {
     const x0 = (peekState(host).players[0].piece!).x
     // seq 0, upTo 3, a single 'left' stamped at tick 1 → advances slot 0 from tick 0 to 3.
     host.handleMessage(0, JSON.stringify({ t: 'input', seq: 0, upTo: 3, events: [[1, code('left')]] }))
-    for (let i = 0; i < 5; i++) host.tick() // snap fires on the 5th alarm
+    // Five 50ms-spaced alarms → wallTick reaches 5 (snap fires on the 5th alarm), same as before.
+    for (let i = 1; i <= 5; i++) host.tick(peekStartMs(host) + i * T_MS)
     const snap = lastOfType(c, 'snap')!
     const piece = snap.state.players[0][6]
     if (piece === 0) throw new Error('expected a live piece')
@@ -173,7 +181,9 @@ describe('BlockMatchHost', () => {
     const x0 = (peekState(host).players[0].piece!).x
     // At the first alarm wallTick is 1; LEAD_TICKS is 5, so upTo 7 is 1 past the lead cap → drop.
     host.handleMessage(0, JSON.stringify({ t: 'input', seq: 0, upTo: 7, events: [[1, code('left')]] }))
-    for (let i = 0; i < 5; i++) host.tick()
+    // The batch is drained on the FIRST alarm, where wallTick is 1 and upTo 7 > 1 + LEAD_TICKS(5) →
+    // dropped and the buffer cleared, so the later ticks never see it. Same as the old +1 clock.
+    for (let i = 1; i <= 5; i++) host.tick(peekStartMs(host) + i * T_MS)
     const snap = lastOfType(c, 'snap')!
     const piece = snap.state.players[0][6]
     if (piece === 0) throw new Error('expected a live piece')
@@ -185,7 +195,8 @@ describe('BlockMatchHost', () => {
     const host = new BlockMatchHost(1)
     const c = conn()
     host.join(c, 'solo')
-    for (let i = 0; i < 30; i++) host.tick() // wallTick reaches 30; floor = 30 - LAG_TICKS(25) = 5
+    // 30 alarms at 50ms → wallTick reaches 30; floor = 30 - LAG_TICKS(25) = 5.
+    for (let i = 1; i <= 30; i++) host.tick(peekStartMs(host) + i * T_MS)
     expect(peekState(host).players[0].tick).toBe(5)
   })
 
@@ -213,7 +224,7 @@ describe('BlockMatchHost', () => {
     const expectedHole = Math.floor(randStep(KNOWN_RNG).value * 10)
 
     host.handleMessage(0, JSON.stringify({ t: 'input', seq: 0, upTo: 1, events: [[1, code('hardDrop')]] }))
-    host.tick()
+    host.tick(peekStartMs(host) + T_MS) // one 50ms alarm → wallTick 1, so the upTo-1 batch is in-window
 
     const p1 = peekState(host).players[1]
     expect(p1.pendingGarbage).toEqual([{ rows: 1, holeCol: expectedHole }])
@@ -231,7 +242,7 @@ describe('BlockMatchHost', () => {
     expect(() => host.handleMessage(0, JSON.stringify({ t: 'input' }))).not.toThrow()
     expect(() => host.handleMessage(0, 'x'.repeat(9000))).not.toThrow()
     expect(() => host.handleMessage(99, JSON.stringify({ t: 'input', seq: 0, upTo: 1, events: [] }))).not.toThrow()
-    expect(host.tick().type).toBe('running')
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running')
   })
 
   it('inputs before match start are rejected without crashing (no host state yet)', () => {
@@ -253,13 +264,46 @@ describe('BlockMatchHost', () => {
 
       host.leave(j0.connId)
       vi.setSystemTime(1_000_000 + 4_000)
-      expect(host.tick().type).toBe('running') // grace not elapsed
+      expect(host.tick(Date.now()).type).toBe('running') // grace not elapsed
       expect(lastOfType(c1, 'end')).toBeNull()
 
       vi.setSystemTime(1_000_000 + 5_100)
-      expect(host.tick().type).toBe('ended') // grace elapsed → forfeit
+      expect(host.tick(Date.now()).type).toBe('ended') // grace elapsed → forfeit
       const end = lastOfType(c1, 'end')!
       expect(end.result).toEqual([0, 1]) // slot 1 (the one who stayed) wins
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('production alarm latency (~75ms) must not starve inputs: time-derived wallTick tracks the client clock', () => {
+    // Reproduces the live starvation: Cloudflare alarm processing + reschedule latency stretched the
+    // effective alarm period to ~75ms, so an alarm-COUNTED wallTick advanced at ~13Hz while the client
+    // ticks a true 20Hz via setInterval. Within ~1s every batch's upTo outran wallTick + LEAD_TICKS and
+    // applyOneBatch dropped EVERY batch forever; the board stalled at the force-advance floor
+    // (~wallTick - LAG_TICKS). A TIME-DERIVED wallTick tracks real elapsed, so batches stay accepted.
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000_000)
+    try {
+      const host = new BlockMatchHost(1)
+      const c = conn()
+      host.join(c, 'solo') // start() records startMs = 2_000_000 (client's tick-0 instant)
+      const startMs = peekStartMs(host)
+      let seq = 0
+      let lastUpTo = 0
+      for (let alarm = 1; alarm <= 40; alarm++) {
+        const nowMs = startMs + alarm * 75 // alarms arrive every ~75ms (the stretched period)
+        const clientTick = Math.floor((alarm * 75) / T_MS) // client's true 20Hz clock: elapsed / 50
+        if (clientTick > lastUpTo) {
+          host.handleMessage(0, JSON.stringify({ t: 'input', seq: seq++, upTo: clientTick, events: [] }))
+          lastUpTo = clientTick
+        }
+        vi.setSystemTime(nowMs)
+        host.tick(nowMs)
+      }
+      // 40 alarms ≈ 3s of real time → the client is at tick 60. Every batch was accepted, so the board
+      // followed upTo to 60 — NOT stalled near an alarm-counted wallTick(40) - LAG_TICKS(25) = 15.
+      expect(peekState(host).players[0].tick).toBe(60)
     } finally {
       vi.useRealTimers()
     }

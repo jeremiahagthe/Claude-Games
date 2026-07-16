@@ -83,7 +83,8 @@ export class BlockMatchHost {
   private state: MatchState | null = null
   private started = false
   private ended = false
-  private wallTick = 0 // +1 per alarm
+  private startMs = 0 // wall clock zero: set at start(), == the instant clients receive StartMsg
+  private wallTick = 0 // TIME-DERIVED: floor((now - startMs) / TICK_MS), never decreasing
   private alarms = 0 // alarm counter, for the snap cadence
 
   constructor(humanCount: number) {
@@ -138,14 +139,23 @@ export class BlockMatchHost {
     this.buffers.set(slot, buf)
   }
 
-  /** Invoked by BlockMatchDO.alarm() at 20Hz (50ms) once the match has started. */
-  tick(): TickAction {
+  /**
+   * Invoked by BlockMatchDO.alarm() once the match has started; `nowMs` is the DO's Date.now().
+   * wallTick is derived from elapsed wall time, NOT counted per alarm: in production, alarm
+   * processing + Cloudflare alarm-reschedule latency stretch the effective period well past
+   * TICK_MS (~75ms live), so a per-alarm counter would fall behind the clients' true 20Hz clock
+   * and every input batch's upTo would outrun wallTick + LEAD_TICKS → silently dropped forever.
+   * A late alarm now advances wallTick by 2+ at once; bots / force-advance / sudden-death all
+   * catch up via their while-loops, so processing granularity is decoupled from sim time.
+   */
+  tick(nowMs: number): TickAction {
     if (this.ended || !this.state) return { type: 'empty' }
     // No attached human sockets left to serve: stop burning DO CPU on a match nobody is watching
     // (same 'empty' stop as snake-match.ts, generalized to the grace-delayed kill model here).
     if (this.conns.size === 0) return { type: 'empty' }
 
-    this.wallTick += 1
+    // Never-decreasing guard against clock weirdness (NTP step-back / a stale alarm firing late).
+    this.wallTick = Math.max(this.wallTick, Math.floor((nowMs - this.startMs) / TICK_MS))
     this.alarms += 1
     this.applyGraceExpiry(Date.now())
 
@@ -299,6 +309,10 @@ export class BlockMatchHost {
 
   private start(): void {
     this.started = true
+    // Wall clock zero. This start() broadcasts StartMsg below, and each client starts its own tick 0
+    // on receipt, so the server's time-derived wallTick shares that origin. The first tick alarm is
+    // scheduled ~TICK_MS after this, so nowMs - startMs ≈ TICK_MS → wallTick 1 on the first tick.
+    this.startMs = Date.now()
     const seed = Math.floor(Math.random() * 2 ** 31)
     // Final slot assignment: compact the SURVIVING connections (pre-start leavers are already
     // gone from `conns`) into slots 0..k-1 in join order; a bot backfills the remaining slot.
@@ -416,7 +430,7 @@ export class BlockMatchDO implements DurableObject {
       void this.state.storage.setAlarm(Date.now() + TICK_MS) // enter the tick phase
       return
     }
-    const action = this.host.tick()
+    const action = this.host.tick(Date.now())
     if (action.type === 'running') {
       void this.state.storage.setAlarm(Date.now() + TICK_MS)
       return
