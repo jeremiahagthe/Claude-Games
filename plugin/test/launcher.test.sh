@@ -313,9 +313,9 @@ T_ROOT=$(mktemp -d)
 cat > "$T_ROOT/games.json" <<'JSON'
 {"games":[
   {"id":"fragwait","title":"fragwait — terminal FPS deathmatch","cmd":"npx -y fragwait@0.1.4"},
-  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.7"},
-  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.2"},
-  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.0"}
+  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.8"},
+  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.3"},
+  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.1"}
 ]}
 JSON
 
@@ -340,7 +340,7 @@ OUT4=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE=
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
 echo "$OUT4" | grep -q "snakewait" || fail "four-entry rotation pick 4 expected snakewait, got: $OUT4"
 grep -q '"next":4' "$T_HOME/.fragwait/rotation.json" || fail "four-entry rotation state after pick 4 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
-grep -qF "ARG:npx -y snakewait@0.1.0" "$RECORD" || fail "tmux shim did not receive the snakewait registry cmd: $(cat "$RECORD")"
+grep -qF "ARG:npx -y snakewait@0.1.1" "$RECORD" || fail "tmux shim did not receive the snakewait registry cmd: $(cat "$RECORD")"
 
 OUT5=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
@@ -364,9 +364,9 @@ T_ROOT=$(mktemp -d)
 cat > "$T_ROOT/games.json" <<'JSON'
 {"games":[
   {"id":"fragwait","title":"fragwait — terminal FPS deathmatch","cmd":"npx -y fragwait@0.1.4"},
-  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.7"},
-  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.2"},
-  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.0"},
+  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.8"},
+  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.3"},
+  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.1"},
   {"id":"blockwait","title":"blockwait — terminal block-stacking duel","cmd":"npx -y blockwait@0.1.1"}
 ]}
 JSON
