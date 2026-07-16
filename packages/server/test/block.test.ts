@@ -448,18 +448,27 @@ describe('BlockMatchDO', () => {
 })
 
 describe('wrangler.jsonc migrations', () => {
-  it('append-only: v1..v5 tags present in order; v1-v4 byte-identical; BLOCK bindings added', () => {
+  it('append-only: v1..v6 tags present in order; v1-v5 byte-identical; BLOCK bindings added', () => {
     const raw = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8')
     const parsed = JSON.parse(raw.replace(/\/\/.*$/gm, '')) as {
       migrations: { tag: string; new_sqlite_classes: string[] }[]
       durable_objects: { bindings: { name: string; class_name: string }[] }
     }
-    expect(parsed.migrations.map((m) => m.tag)).toEqual(['v1', 'v2', 'v3', 'v4', 'v5'])
+    // Front-pinned prefix (house rule: the NEWEST migration's test owns exactness; this one
+    // pins v1-v6 byte-identical so history can only be appended to, never rewritten).
+    expect(parsed.migrations.map((m) => m.tag).slice(0, 6)).toEqual(['v1', 'v2', 'v3', 'v4', 'v5', 'v6'])
     expect(parsed.migrations[0]).toEqual({ tag: 'v1', new_sqlite_classes: ['MatchDO', 'LobbyDO'] })
     expect(parsed.migrations[1]).toEqual({ tag: 'v2', new_sqlite_classes: ['ChessLobbyDO', 'ChessMatchDO'] })
     expect(parsed.migrations[2]).toEqual({ tag: 'v3', new_sqlite_classes: ['BomberLobbyDO', 'BomberMatchDO'] })
     expect(parsed.migrations[3]).toEqual({ tag: 'v4', new_sqlite_classes: ['SnakeLobbyDO', 'SnakeMatchDO'] })
     expect(parsed.migrations[4]).toEqual({ tag: 'v5', new_sqlite_classes: ['BlockLobbyDO', 'BlockMatchDO'] })
+    // v6: the 2026-07-16 bomber DO namespace-refresh (see index.ts bomber route comment).
+    expect(parsed.migrations[5]).toEqual({ tag: 'v6', new_sqlite_classes: ['BomberLobby2DO', 'BomberMatch2DO'] })
+    const bomberBindings = parsed.durable_objects.bindings.filter((b) => b.name.startsWith('BOMBER_'))
+    expect(bomberBindings).toEqual([
+      { name: 'BOMBER_LOBBY', class_name: 'BomberLobby2DO' },
+      { name: 'BOMBER_MATCH', class_name: 'BomberMatch2DO' },
+    ])
     const names = parsed.durable_objects.bindings.map((b) => b.name)
     expect(names).toEqual(
       expect.arrayContaining([

@@ -106,3 +106,10 @@ export class BomberLobbyDO implements DurableObject {
     return Response.json({ matchId: outcome.matchId, token: String(outcome.humanCount) })
   }
 }
+
+// Fresh class = fresh Durable Object NAMESPACE. On 2026-07-16 every instance of the
+// original BomberLobbyDO namespace (including never-before-used names) returned
+// "internal error; reference = ..." on prod across three clean deploys while the same
+// bundle worked under wrangler dev — a Cloudflare-side namespace failure, not code.
+// Migration v6 rebinds BOMBER_LOBBY here; lobby state is ephemeral, nothing migrates.
+export class BomberLobby2DO extends BomberLobbyDO {}

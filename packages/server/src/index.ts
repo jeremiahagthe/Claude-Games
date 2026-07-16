@@ -33,14 +33,14 @@ export default {
     }
 
     // Bomber routes: same shape as chess's, kept outside the shared fragwait router.
-    // 'bomber-2', not 'bomber': the original named instance wedged at the Cloudflare
-    // infrastructure level on 2026-07-16 — every fetch returned "internal error;
-    // reference = …" (no JS stack) across two clean redeploys while the identical
-    // bundle worked under wrangler dev. Lobby state is ephemeral in-memory rooms, so
-    // pointing at a fresh instance loses nothing. If a lobby ever 1101s again with a
-    // CF-internal reference string, this rename is the remedy (bump the suffix).
+    // BOMBER_LOBBY/BOMBER_MATCH bind to BomberLobby2DO/BomberMatch2DO (migration v6):
+    // on 2026-07-16 the ORIGINAL bomber DO namespace failed Cloudflare-side — every
+    // instance, including fresh never-used names, returned "internal error;
+    // reference = …" (no JS stack) across three clean deploys while the identical
+    // bundle worked under wrangler dev. Fresh classes = fresh namespaces = the fix.
+    // If a game's DOs ever 1101 like that again, this class-suffix bump is the remedy.
     if (url.pathname === '/bomber/join' && req.method === 'POST') {
-      return env.BOMBER_LOBBY.get(env.BOMBER_LOBBY.idFromName('bomber-2')).fetch(req)
+      return env.BOMBER_LOBBY.get(env.BOMBER_LOBBY.idFromName('bomber')).fetch(req)
     }
     const bomberMatchId = parseBomberMatchId(url.pathname)
     if (bomberMatchId && req.method === 'GET') {
@@ -80,8 +80,8 @@ export { MatchDO } from './match-do.js'
 export { LobbyDO } from './lobby-do.js'
 export { ChessLobbyDO } from './chess-lobby.js'
 export { ChessMatchDO } from './chess-match.js'
-export { BomberLobbyDO } from './bomber-lobby.js'
-export { BomberMatchDO } from './bomber-match.js'
+export { BomberLobbyDO, BomberLobby2DO } from './bomber-lobby.js'
+export { BomberMatchDO, BomberMatch2DO } from './bomber-match.js'
 export { SnakeLobbyDO } from './snake-lobby.js'
 export { SnakeMatchDO } from './snake-match.js'
 export { BlockLobbyDO } from './block-lobby.js'

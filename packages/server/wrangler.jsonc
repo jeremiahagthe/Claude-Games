@@ -8,8 +8,8 @@
       { "name": "LOBBY", "class_name": "LobbyDO" },
       { "name": "CHESS_LOBBY", "class_name": "ChessLobbyDO" },
       { "name": "CHESS_MATCH", "class_name": "ChessMatchDO" },
-      { "name": "BOMBER_LOBBY", "class_name": "BomberLobbyDO" },
-      { "name": "BOMBER_MATCH", "class_name": "BomberMatchDO" },
+      { "name": "BOMBER_LOBBY", "class_name": "BomberLobby2DO" },
+      { "name": "BOMBER_MATCH", "class_name": "BomberMatch2DO" },
       { "name": "SNAKE_LOBBY", "class_name": "SnakeLobbyDO" },
       { "name": "SNAKE_MATCH", "class_name": "SnakeMatchDO" },
       { "name": "BLOCK_LOBBY", "class_name": "BlockLobbyDO" },
@@ -21,6 +21,7 @@
     { "tag": "v2", "new_sqlite_classes": ["ChessLobbyDO", "ChessMatchDO"] },
     { "tag": "v3", "new_sqlite_classes": ["BomberLobbyDO", "BomberMatchDO"] },
     { "tag": "v4", "new_sqlite_classes": ["SnakeLobbyDO", "SnakeMatchDO"] },
-    { "tag": "v5", "new_sqlite_classes": ["BlockLobbyDO", "BlockMatchDO"] }
+    { "tag": "v5", "new_sqlite_classes": ["BlockLobbyDO", "BlockMatchDO"] },
+    { "tag": "v6", "new_sqlite_classes": ["BomberLobby2DO", "BomberMatch2DO"] }
   ]
 }

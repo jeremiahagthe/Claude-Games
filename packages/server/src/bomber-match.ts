@@ -412,3 +412,8 @@ export class BomberMatchDO implements DurableObject {
     this.sockets.clear()
   }
 }
+
+// Same namespace-refresh remedy as BomberLobby2DO (see bomber-lobby.ts): migration v6
+// rebinds BOMBER_MATCH here. In-flight matches on the old namespace are lost — the old
+// namespace was unreachable anyway (its lobby could no longer mint joinable matches).
+export class BomberMatch2DO extends BomberMatchDO {}
