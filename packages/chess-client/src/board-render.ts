@@ -432,6 +432,12 @@ export function renderBoard(o: RenderOpts): string {
   // Per-line clear-to-EOL (ESC[K) kills residue to the RIGHT of each line
   // when the frame narrows mid-resize; trailing clear-below (ESC[J) kills
   // residue when it shrinks vertically — the renderer never scrolls, so
-  // both are always safe (feel chess-4: mixed-size frame corruption).
-  return `${ESC}[H` + fitted.join(`${ESC}[K\r\n`) + RESET + `${ESC}[J`
+  // both are always safe (feel chess-4: mixed-size frame corruption). The
+  // ESC[K sits at the START of each line (leading ESC[H ESC[K, then \r\n ESC[K
+  // between lines) rather than the end: a trailing ESC[K after an exactly-
+  // 80-visible-column line lands on an 80-column terminal with the cursor
+  // parked in VT pending-wrap at column 80 and erases that just-written 80th
+  // column (snakewait feel-gate lesson). A leading ESC[K clears the row before
+  // content lands, so it never interacts with that pending-wrap state.
+  return `${ESC}[H${ESC}[K` + fitted.join(`\r\n${ESC}[K`) + RESET + `${ESC}[J`
 }

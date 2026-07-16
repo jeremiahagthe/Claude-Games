@@ -167,11 +167,15 @@ describe('renderBoard', () => {
   })
 
   // feel chess-4 hardening: resize residue and sprite-mode cursor.
-  it('every line ends with clear-to-EOL so a narrowing frame leaves no right-side residue', () => {
+  it('every line starts with clear-to-EOL so a narrowing frame leaves no right-side residue', () => {
     const out = renderBoard(baseOpts())
-    expect(out).toContain('\x1b[K\r\n')
+    // Clear-to-EOL moved to the START of each line (leading ESC[H ESC[K, then
+    // \r\n ESC[K between lines) so a full-width line never gets its 80th column
+    // erased under VT pending-wrap (snakewait feel-gate lesson).
+    expect(out.startsWith('\x1b[H\x1b[K')).toBe(true)
+    expect(out).toContain('\r\n\x1b[K')
     // one ESC[K per line boundary (24 board lines at 80x30 side-HUD → 23 joins)
-    expect(out.split('\x1b[K\r\n').length).toBe(24)
+    expect(out.split('\r\n\x1b[K').length).toBe(24)
   })
 
   it('sprite-mode cursor lifts the square background instead of underlining (no streaks)', () => {
