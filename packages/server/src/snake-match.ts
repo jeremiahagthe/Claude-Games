@@ -17,6 +17,10 @@ import {
 
 const TICK_MS = 1000 / TICK_RATE // 50ms, per Task 7's brief
 const GRACE_MS = 5_000 // disconnect grace before the snake is killed in-sim
+// Bounds the sim steps a single alarm may run, so one very late alarm can't burn unbounded CPU
+// catching up. Any deficit self-heals across later alarms: 4 steps/alarm outpaces the designed
+// 20Hz at any realistic alarm rate (even ~13Hz live leaves ~2 ticks of catch-up per alarm).
+const MAX_CATCHUP_STEPS = 4
 // Getting {matchId, token} from POST /snake/join and actually opening the ws are separate
 // steps -- a client can vanish in between (a Ctrl-C is enough). Without a deadline the
 // players who DID connect would wait forever: start() fires only at conns.size ===
@@ -79,6 +83,7 @@ export class SnakeMatchHost {
   private state: MatchState | null = null
   private started = false
   private ended = false
+  private startMs = 0 // wall clock zero: set at start(), == the instant clients receive StartMsg
 
   constructor(humanCount: number) {
     this.humanCount = humanCount
@@ -134,45 +139,64 @@ export class SnakeMatchHost {
     this.latches.set(slot, { dir: msg.dir })
   }
 
-  /** Invoked by SnakeMatchDO.alarm() at 20Hz (50ms) once the match has started. */
-  tick(): TickAction {
+  /**
+   * Invoked by SnakeMatchDO.alarm() once the match has started; `nowMs` is the DO's Date.now().
+   * Sim progress is TIME-DERIVED, not one step per alarm: Cloudflare alarm processing + reschedule
+   * latency stretch the effective period past TICK_MS (~75ms live), so counting one step per alarm
+   * sagged the whole match to ~13Hz — a uniform ~35% slowdown. We instead run as many 20Hz steps as
+   * the elapsed wall time calls for (bounded per alarm), so a late alarm catches up 2+ ticks at once.
+   */
+  tick(nowMs: number): TickAction {
     if (this.ended || !this.state) return { type: 'empty' }
     // No attached human sockets left to serve: stop burning DO CPU on a match nobody is
     // watching (same rationale as bomber-match.ts's 'empty' stop, generalized to the
     // grace-delayed kill model here).
     if (this.conns.size === 0) return { type: 'empty' }
 
-    this.applyGraceExpiry(Date.now())
+    // Grace runs ONCE per alarm against the passed wall clock (nowMs), not per catch-up step: the
+    // disconnect deadline is real wall time, independent of how many sim steps this alarm runs.
+    this.applyGraceExpiry(nowMs)
 
-    const inputs: (Input | null)[] = []
-    for (let id = 0; id < MAX_PLAYERS; id++) {
-      const mind = this.minds.get(id)
-      if (mind) {
-        // Online backfill bots are placeholders for humans, not the opposition (mirrors
-        // bomber-match.ts's BOT_SKILLS reasoning): 'normal' cadence in tick().
-        inputs.push(botDecide(this.state, id, mind, 'normal'))
-        continue
+    // Time-derived target tick; steps this alarm is the (bounded, never-negative) deficit vs the
+    // sim's own tick counter. state.tick is incremented by snakewait-core's step(), so it is the
+    // authoritative counter here -- no separate wall-tick field is needed.
+    const target = Math.floor((nowMs - this.startMs) / TICK_MS)
+    const steps = Math.min(Math.max(target - this.state.tick, 0), MAX_CATCHUP_STEPS)
+    if (steps === 0) return { type: 'running' } // early alarm: no elapsed sim time yet, nothing to send
+
+    for (let s = 0; s < steps; s++) {
+      const inputs: (Input | null)[] = []
+      for (let id = 0; id < MAX_PLAYERS; id++) {
+        const mind = this.minds.get(id)
+        if (mind) {
+          // Online backfill bots are placeholders for humans, not the opposition (mirrors
+          // bomber-match.ts's BOT_SKILLS reasoning): 'normal' cadence in tick().
+          inputs.push(botDecide(this.state, id, mind, 'normal'))
+          continue
+        }
+        const latch = this.latches.get(id)
+        inputs.push(latch && latch.dir !== null ? { dir: latch.dir } : { dir: null })
+        // Consume the one-shot latch into exactly the FIRST catch-up step that reads it, then clear
+        // it -- the sim's own pendingDir carries the turn forward, so feeding it again next step
+        // would be redundant (and, on 180-reverse edge cases, could re-request an already rejected
+        // turn against a since-changed heading).
+        if (latch && latch.dir !== null) this.latches.set(id, { dir: null })
       }
-      const latch = this.latches.get(id)
-      inputs.push(latch && latch.dir !== null ? { dir: latch.dir } : { dir: null })
-      // Consume the one-shot latch into exactly this tick's step() call, then clear it --
-      // the sim's own pendingDir carries the turn forward, so feeding it again next tick
-      // would be redundant (and, on 180-reverse edge cases, could re-request an already
-      // rejected turn against a since-changed heading).
-      if (latch && latch.dir !== null) this.latches.set(id, { dir: null })
-    }
 
-    this.state = step(this.state, inputs)
+      this.state = step(this.state, inputs)
 
-    if (this.state.result) {
-      this.ended = true
-      // Send the final board (its WireState.result is now stamped) before the formal end
-      // notice -- EndMsg itself carries no board state, so this is the client's last frame.
-      this.broadcast({ t: 'snap', state: toWire(this.state) })
-      const result = this.state.result
-      this.broadcast({ t: 'end', result: result.kind === 'win' ? [0, result.winner] : [1] })
-      return { type: 'ended' }
+      if (this.state.result) {
+        this.ended = true
+        // Send the final board (its WireState.result is now stamped) before the formal end
+        // notice -- EndMsg itself carries no board state, so this is the client's last frame.
+        this.broadcast({ t: 'snap', state: toWire(this.state) })
+        const result = this.state.result
+        this.broadcast({ t: 'end', result: result.kind === 'win' ? [0, result.winner] : [1] })
+        return { type: 'ended' }
+      }
     }
+    // One snap after the whole catch-up loop (not one per step): render-only clients just want the
+    // latest board, and coalescing keeps the outbound rate at the alarm rate, not the sim rate.
     this.broadcast({ t: 'snap', state: toWire(this.state) })
     return { type: 'running' }
   }
@@ -209,6 +233,10 @@ export class SnakeMatchHost {
       this.minds.set(i, createBotMind(Math.floor(Math.random() * 2 ** 31)))
     }
     this.state = createMatch(seed, names, bots)
+    // Wall clock zero, recorded immediately before StartMsg: each client starts its own tick 0 on
+    // receipt, so the server's time-derived tick shares that origin. The first tick alarm is
+    // scheduled ~TICK_MS later, so nowMs - startMs ≈ TICK_MS → one step on the first tick.
+    this.startMs = Date.now()
     for (const [connId, conn] of this.conns) {
       this.send(conn, { t: 'start', you: this.slots.get(connId)!, seed, names, bots })
     }
@@ -311,7 +339,7 @@ export class SnakeMatchDO implements DurableObject {
       void this.state.storage.setAlarm(Date.now() + TICK_MS) // enter the tick phase
       return
     }
-    const action = this.host.tick()
+    const action = this.host.tick(Date.now())
     if (action.type === 'running') {
       // setAlarm is deliberately fire-and-forget (`void`): this runs inside the alarm handler
       // itself, and the DO runtime's input/output gating keeps the storage write ordered

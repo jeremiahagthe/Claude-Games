@@ -20,6 +20,24 @@ function outcomeCapture(): { outcomes: LobbyOutcome[]; resolve: (o: LobbyOutcome
   return { outcomes, resolve: (o) => outcomes.push(o) }
 }
 
+// tick() is now time-derived (see bomber-match.ts): it runs floor((nowMs - startMs)/TICK_MS)
+// sim steps, bounded, instead of exactly one per call. peekStartMs reads the wall-clock zero
+// recorded at start(); T_MS mirrors the host's TICK_MS.
+function peekStartMs(host: BomberMatchHost): number {
+  return (host as unknown as { startMs: number }).startMs
+}
+function peekState(host: BomberMatchHost): BomberState {
+  return (host as unknown as { state: BomberState }).state
+}
+const T_MS = 1000 / 20 // 50ms wall tick, mirrors the host's TICK_MS
+// Advancing wall clock: each call lands exactly one 50ms tick later than the last, so tick() runs
+// exactly one sim step per call (target - state.tick === 1) — the pre-fix one-step-per-alarm cadence
+// every existing assertion was written against. Mirrors block.test.ts's startMs + k*T_MS driving.
+function ticker(host: BomberMatchHost): () => ReturnType<BomberMatchHost['tick']> {
+  let k = 0
+  return () => host.tick(peekStartMs(host) + ++k * T_MS)
+}
+
 describe('BomberLobbyQueue', () => {
   it('the 4th joiner fills the room — every waiter (including itself) resolves immediately, humanCount 4', () => {
     const q = new BomberLobbyQueue()
@@ -128,7 +146,7 @@ describe('BomberMatchHost', () => {
     const c = conn()
     host.join(c, 'solo')
     const before = c.sent.length
-    const status = host.tick()
+    const status = host.tick(peekStartMs(host) + T_MS) // one 50ms tick elapsed → exactly one sim step
     expect(status).toEqual({ type: 'running' })
     expect(c.sent.length).toBe(before + 1)
     const snap = lastMsg(c)
@@ -141,12 +159,13 @@ describe('BomberMatchHost', () => {
     const conns = [conn(), conn(), conn(), conn()]
     const names = ['a', 'b', 'c', 'd']
     conns.forEach((c, i) => host.join(c, names[i]!))
+    const tk = ticker(host) // advancing wall clock → exactly one sim step per call
 
     // player 0 spawns at (1,1); (2,1) is guaranteed clear (spawn-pocket tile, never a soft
     // block), so this single hop is deterministic regardless of the match's random seed.
     // wire index 9 is the dir buffer (dirCode); index 10 is stepCooldown.
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
-    host.tick()
+    tk()
     let snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
     expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // moved one tile to (2,1)
@@ -157,7 +176,7 @@ describe('BomberMatchHost', () => {
     // buffer is set back to 'right' — proving 'keep' sustains a held direction (hold-to-run)
     // rather than being dropped. Seed-independent (position unchanged either way).
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'keep', bomb: false }))
-    host.tick()
+    tk()
     snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
     expect(snap.state.players[0]![9]).toBe(4) // dirCode 'right' — held direction re-buffered, not lost
@@ -165,7 +184,7 @@ describe('BomberMatchHost', () => {
     // an explicit null (the client's one-shot latch releasing) is an authoritative stop: the
     // buffer is cleared this tick, so the player will not take another step.
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: null, bomb: false }))
-    host.tick()
+    tk()
     snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
     expect(snap.state.players[0]![9]).toBe(0) // buffer cleared → standing still
@@ -182,7 +201,7 @@ describe('BomberMatchHost', () => {
     // bomb -- the pending one-shot must survive the overwrite and still be placed this tick.
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'keep', bomb: true }))
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
-    host.tick()
+    host.tick(peekStartMs(host) + T_MS) // one 50ms tick → exactly one sim step
     const snap = lastMsg(conns[0]!)
     if (snap.t !== 'snap') throw new Error('expected snap')
     expect(snap.state.bombs).toHaveLength(1) // the queued bomb was placed, not silently dropped
@@ -206,23 +225,28 @@ describe('BomberMatchHost', () => {
       const c0 = conn()
       const c1 = conn()
       host.join(c0, 'solo')
-      host.join(c1, 'stays')
+      host.join(c1, 'stays') // start() records startMs = 1_000_000
+      const tk = ticker(host) // sim clock: startMs + k*T_MS → exactly one sim step per call
       host.handleMessage(0, JSON.stringify({ t: 'input', dir: null, bomb: true }))
-      host.tick() // places player 0's bomb at their spawn tile
+      tk() // tick 1 (nowMs 1_000_050): places player 0's bomb at their spawn tile
       let snap = lastMsg(c1)
       if (snap.t !== 'snap') throw new Error('expected snap')
       expect(snap.state.bombs).toHaveLength(1)
 
-      host.leave(0) // player 0's socket closes: grace period starts, no immediate elimination
-      vi.setSystemTime(1_000_000 + 4_000)
-      host.tick()
+      // tick() derives sim progress from the passed nowMs, while grace is measured against the
+      // disconnect's own wall-time -- two independent clocks. To cross the 5s grace within two 50ms
+      // sim ticks (so each tick still advances exactly one step, keeping the bomb-count assertions
+      // valid), record the disconnect ~4.9s "before" the sim's tick-2 instant: grace elapses between
+      // tick 2 and tick 3.
+      vi.setSystemTime(1_000_000 - 4_880) // disconnectedAt = 995_120
+      host.leave(0) // player 0's socket closes: grace starts, no immediate elimination
+      tk() // tick 2 (nowMs 1_000_100): grace = 1_000_100 - 995_120 = 4980ms < 5000 → still alive
       snap = lastMsg(c1)
       if (snap.t !== 'snap') throw new Error('expected snap')
       expect(snap.state.players[0]![5]).toBe(1) // still alive: grace not elapsed yet
       expect(snap.state.bombs).toHaveLength(1) // bomb still ticking down
 
-      vi.setSystemTime(1_000_000 + 5_100)
-      host.tick()
+      tk() // tick 3 (nowMs 1_000_150): grace = 1_000_150 - 995_120 = 5030ms ≥ 5000 → eliminated
       snap = lastMsg(c1)
       if (snap.t !== 'snap') throw new Error('expected snap')
       expect(snap.state.players[0]![5]).toBe(0) // eliminated once the grace elapses
@@ -240,7 +264,7 @@ describe('BomberMatchHost', () => {
     expect(() => host.handleMessage(0, JSON.stringify({ t: 'input' }))).not.toThrow() // missing fields
     expect(() => host.handleMessage(0, 'x'.repeat(5000))).not.toThrow() // over MAX_RAW
     expect(() => host.handleMessage(99, JSON.stringify({ t: 'input', dir: 'up', bomb: false }))).not.toThrow() // unknown player id
-    expect(host.tick().type).toBe('running') // host is still healthy afterward
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running') // host is still healthy afterward
   })
 
   // --- start deadline (socket no-show) ---------------------------------------------------
@@ -267,7 +291,7 @@ describe('BomberMatchHost', () => {
     if (s2.t !== 'start') throw new Error('expected start')
     expect(s2.you).toBe(1)
     expect(host.join(conn(), 'late')).toBeNull() // the no-show finally arriving is rejected
-    expect(host.tick().type).toBe('running') // tick loop runs normally after a force-start
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running') // tick loop runs normally after a force-start
   })
 
   it('start deadline with zero connected sockets → empty (room is tombstoned, no start ever sent)', () => {
@@ -315,7 +339,7 @@ describe('BomberMatchHost', () => {
     // B's InputMsg must actually drive slot 0's latch in tick() -- a bot mind on that slot
     // would override it. Slot 0 spawns at (1,1); (2,1) is a spawn-pocket tile, always clear.
     host.handleMessage(jB.connId, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
-    expect(host.tick().type).toBe('running')
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running')
     const snap = lastMsg(cB)
     if (snap.t !== 'snap') throw new Error('expected snap')
     // The rightward move to (2,1) is itself the proof B's latch drives slot 0 (a bot mind would
@@ -351,7 +375,7 @@ describe('BomberMatchHost', () => {
     // spawn-pocket tile, always clear, so C stepping left is deterministic too.
     host.handleMessage(jB.connId, JSON.stringify({ t: 'input', dir: 'right', bomb: false }))
     host.handleMessage(jC.connId, JSON.stringify({ t: 'input', dir: 'left', bomb: false }))
-    expect(host.tick().type).toBe('running')
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running')
     const snap = lastMsg(cC)
     if (snap.t !== 'snap') throw new Error('expected snap')
     expect([snap.state.players[0]![3], snap.state.players[0]![4]]).toEqual([2, 1]) // B moved right
@@ -372,7 +396,7 @@ describe('BomberMatchHost', () => {
     ;(host as unknown as { state: BomberState }).state = nearEnd
 
     const sentBefore = conns[1]!.sent.length
-    expect(host.tick()).toEqual({ type: 'ended' })
+    expect(host.tick(peekStartMs(host) + T_MS)).toEqual({ type: 'ended' }) // one step stamps the result
     // Every conn got exactly two messages: the final board snap, then the formal end notice.
     for (const c of conns) {
       expect(c.sent.length).toBe(sentBefore + 2)
@@ -386,8 +410,35 @@ describe('BomberMatchHost', () => {
     // Post-end the host is inert: no more broadcasts, no crashes.
     expect(() => host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'up', bomb: false }))).not.toThrow()
     expect(() => host.leave(0)).not.toThrow()
-    expect(host.tick()).toEqual({ type: 'empty' })
+    expect(host.tick(peekStartMs(host) + 2 * T_MS)).toEqual({ type: 'empty' }) // ended: inert regardless of clock
     expect(conns[0]!.sent.length).toBe(sentBefore + 2) // nothing sent after the end pair
+  })
+
+  it('production alarm latency (~75ms) must not slow the match: sim ticks track real elapsed time, not the alarm count', () => {
+    // Reproduces the live ~35% slowdown: Cloudflare alarm processing + reschedule latency stretched
+    // the effective alarm period to ~75ms, so a per-alarm-counted sim advanced at ~13Hz instead of
+    // the designed 20Hz — the whole match ran uniformly slow. A TIME-DERIVED tick runs as many 20Hz
+    // steps as real elapsed time calls for, so the sim tracks wall time regardless of the alarm rate.
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000_000)
+    try {
+      // 4 humans, zero input: nobody moves or bombs, so the match never ends and state.tick is a
+      // clean, deterministic readout of how many sim steps ran across the alarm sequence.
+      const host = new BomberMatchHost(4)
+      for (const n of ['a', 'b', 'c', 'd']) host.join(conn(), n)
+      const startMs = peekStartMs(host)
+      for (let alarm = 1; alarm <= 40; alarm++) {
+        const nowMs = startMs + alarm * 75 // alarms arrive every ~75ms (the stretched live period)
+        vi.setSystemTime(nowMs)
+        host.tick(nowMs)
+      }
+      // 40 alarms ≈ 3s of real time. Time-derived: floor(3000 / 50) = 60 sim ticks. A per-alarm
+      // counter would sit at 40 (the ~13Hz sag). Each 75ms alarm advances the sim by 1–2 steps
+      // (never near MAX_CATCHUP_STEPS = 4), so no catch-up is dropped.
+      expect(peekState(host).tick).toBe(60)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -503,6 +554,10 @@ describe('BomberMatchDO', () => {
   it('arms the start deadline at host creation; when it fires with 2 of 3 humans helloed, the match force-starts and ticks', async () => {
     const pairs: FakeSocket[][] = []
     stubWorkersGlobals(pairs)
+    // Fake timers: tick() is time-derived, so the tick-phase alarm must see ≥ one TICK_MS of wall
+    // time elapse past the force-start instant (startMs) to run a sim step and broadcast a snap.
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
     try {
       const { state, calls } = fakeDoState()
       const doInstance = new BomberMatchDO(state)
@@ -516,16 +571,18 @@ describe('BomberMatchDO', () => {
       s2.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'two' }) })
       expect(s1.sent).toHaveLength(0) // 2 of 3: still gathering, no start
 
-      await doInstance.alarm() // the deadline fires pre-start
+      await doInstance.alarm() // the deadline fires pre-start → force-start records startMs = now
       const start = parseBomberServerMsg(s1.sent.at(-1)!)
       if (start?.t !== 'start') throw new Error('expected start')
       expect(start.bots).toEqual([false, false, true, true]) // the no-show backfilled as a bot
       expect(calls.setAlarm).toBe(2) // tick loop armed by the deadline handler
 
+      vi.setSystemTime(1_000_000 + 60) // ≥ one 50ms tick past startMs → the tick alarm runs a step
       await doInstance.alarm() // now in the tick phase
       const snap = parseBomberServerMsg(s2.sent.at(-1)!)
       expect(snap?.t).toBe('snap')
     } finally {
+      vi.useRealTimers()
       vi.unstubAllGlobals()
     }
   })
@@ -552,19 +609,23 @@ describe('BomberMatchDO', () => {
   it('all humans connect before the deadline → starts immediately; the tick alarm replaces the deadline in the single alarm slot', async () => {
     const pairs: FakeSocket[][] = []
     stubWorkersGlobals(pairs)
+    vi.useFakeTimers() // time-derived tick: advance past startMs so the tick alarm runs a sim step
+    vi.setSystemTime(1_000_000)
     try {
       const { state, calls } = fakeDoState()
       const doInstance = new BomberMatchDO(state)
       await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=1`))
       const sock = pairs[0]![1]!
       expect(calls.setAlarm).toBe(1) // deadline armed
-      sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) })
+      sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) }) // start records startMs = now
       expect(parseBomberServerMsg(sock.sent.at(-1)!)?.t).toBe('start') // started instantly
       expect(calls.setAlarm).toBe(2) // tick alarm overwrote the pending deadline (one alarm slot)
 
+      vi.setSystemTime(1_000_000 + 60) // ≥ one 50ms tick past startMs
       await doInstance.alarm() // dispatches to the tick phase, not the deadline path
       expect(parseBomberServerMsg(sock.sent.at(-1)!)?.t).toBe('snap')
     } finally {
+      vi.useRealTimers()
       vi.unstubAllGlobals()
     }
   })
@@ -572,12 +633,14 @@ describe('BomberMatchDO', () => {
   it('result → final snap + EndMsg, alarm deleted, sockets closed game over, tombstone; post-end events safe', async () => {
     const pairs: FakeSocket[][] = []
     stubWorkersGlobals(pairs)
+    vi.useFakeTimers() // time-derived tick: advance past startMs so the tick alarm runs a sim step
+    vi.setSystemTime(1_000_000)
     try {
       const { state, calls } = fakeDoState()
       const doInstance = new BomberMatchDO(state)
       await doInstance.fetch(fakeRequest(`https://x/bomber/match/${VALID_ID}/ws?token=1`))
       const sock = pairs[0]![1]!
-      sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) })
+      sock.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'solo' }) }) // start records startMs = now
       expect(parseBomberServerMsg(sock.sent.at(-1)!)?.t).toBe('start')
 
       // Hand-craft a near-end state (players 1-3 dead) so the next tick's step() stamps the
@@ -588,6 +651,7 @@ describe('BomberMatchDO', () => {
       const nearEnd: BomberState = { ...base, players: base.players.map((p) => (p.id === 0 ? p : { ...p, alive: false })) }
       ;(host as unknown as { state: BomberState }).state = nearEnd
 
+      vi.setSystemTime(1_000_000 + 60) // ≥ one 50ms tick past startMs → one step stamps the result
       await doInstance.alarm() // tick: result stamped -> ended -> tombstone
       const snap = parseBomberServerMsg(sock.sent.at(-2)!)
       if (snap?.t !== 'snap') throw new Error('expected final snap')
@@ -606,6 +670,7 @@ describe('BomberMatchDO', () => {
       await expect(doInstance.alarm()).resolves.toBeUndefined() // host already null: no-op
       expect(sock.sent.length).toBe(sentAfterEnd) // nothing sent after the end pair
     } finally {
+      vi.useRealTimers()
       vi.unstubAllGlobals()
     }
   })

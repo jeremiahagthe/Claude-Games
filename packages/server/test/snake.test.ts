@@ -20,6 +20,24 @@ function outcomeCapture(): { outcomes: LobbyOutcome[]; resolve: (o: LobbyOutcome
   return { outcomes, resolve: (o) => outcomes.push(o) }
 }
 
+// tick() is now time-derived (see snake-match.ts): it runs floor((nowMs - startMs)/TICK_MS) sim
+// steps, bounded, instead of exactly one per call. peekStartMs reads the wall-clock zero recorded
+// at start(); T_MS mirrors the host's TICK_MS.
+function peekStartMs(host: SnakeMatchHost): number {
+  return (host as unknown as { startMs: number }).startMs
+}
+function peekState(host: SnakeMatchHost): MatchState {
+  return (host as unknown as { state: MatchState }).state
+}
+const T_MS = 1000 / 20 // 50ms wall tick, mirrors the host's TICK_MS
+// Advancing wall clock: each call lands exactly one 50ms tick later than the last, so tick() runs
+// exactly one sim step per call (target - state.tick === 1) — the pre-fix one-step-per-alarm cadence
+// every existing assertion was written against. Mirrors block.test.ts's startMs + k*T_MS driving.
+function ticker(host: SnakeMatchHost): () => ReturnType<SnakeMatchHost['tick']> {
+  let k = 0
+  return () => host.tick(peekStartMs(host) + ++k * T_MS)
+}
+
 describe('SnakeLobbyQueue', () => {
   it('the 4th joiner fills the room — every waiter (including itself) resolves immediately, humanCount 4', () => {
     const q = new SnakeLobbyQueue()
@@ -141,7 +159,7 @@ describe('SnakeMatchHost', () => {
     const c = conn()
     host.join(c, 'solo')
     const before = c.sent.length
-    const status = host.tick()
+    const status = host.tick(peekStartMs(host) + T_MS) // one 50ms tick elapsed → exactly one sim step
     expect(status).toEqual({ type: 'running' })
     expect(c.sent.length).toBe(before + 1)
     const snap = lastMsg(c)
@@ -158,9 +176,10 @@ describe('SnakeMatchHost', () => {
     // slot 0 spawns heading 'right' at (7,4); a 'down' turn is perpendicular (never a
     // rejected 180) and pends until the sim's stepCooldown completes the tile.
     host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'down' }))
+    const tk = ticker(host) // advancing wall clock → exactly one sim step per call
     let snap: SnakeServerMsg | null = null
     for (let i = 0; i < 6; i++) {
-      host.tick()
+      tk()
       snap = lastMsg(conns[0]!)
     }
     if (!snap || snap.t !== 'snap') throw new Error('expected snap')
@@ -185,7 +204,7 @@ describe('SnakeMatchHost', () => {
     expect(() => host.handleMessage(0, JSON.stringify({ t: 'input' }))).not.toThrow()
     expect(() => host.handleMessage(0, 'x'.repeat(5000))).not.toThrow()
     expect(() => host.handleMessage(99, JSON.stringify({ t: 'input', dir: 'up' }))).not.toThrow()
-    expect(host.tick().type).toBe('running')
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running')
   })
 
   it('disconnect starts a 5s grace, then the snake dies in-sim and decays to food specifically at its own even-indexed pre-death corpse cells (not merely "food exists somewhere")', () => {
@@ -196,11 +215,17 @@ describe('SnakeMatchHost', () => {
       const c0 = conn()
       const c1 = conn()
       host.join(c0, 'solo')
-      host.join(c1, 'stays')
+      host.join(c1, 'stays') // start() records startMs = 1_000_000
+      const tk = ticker(host) // sim clock: startMs + k*T_MS → exactly one sim step per call
 
+      // tick() derives sim progress from the passed nowMs, while grace is measured against the
+      // disconnect's own wall-time -- two independent clocks. Record the disconnect ~4.9s "before"
+      // the sim's tick-2 instant so grace elapses between tick 1 and tick 2, while each tick still
+      // advances exactly one step -- the corpse-cell reconstruction below (and the exact-set check)
+      // depend on precisely one kill-then-step, exactly as the pre-fix one-step-per-tick path gave.
+      vi.setSystemTime(1_000_000 - 4_925) // disconnectedAt = 995_075
       host.leave(0)
-      vi.setSystemTime(1_000_000 + 4_000)
-      host.tick()
+      tk() // tick 1 (nowMs 1_000_050): grace = 1_000_050 - 995_075 = 4975ms < 5000 → still alive
       let snap = lastMsg(c1)
       if (snap.t !== 'snap') throw new Error('expected snap')
       let mine = snap.state.snakes.find((s) => s[0] === 0)!
@@ -223,8 +248,7 @@ describe('SnakeMatchHost', () => {
       }
       expect(expectedCorpseCells.size).toBeGreaterThan(0) // non-vacuity: there's a real corpse-cell set to prove landing on
 
-      vi.setSystemTime(1_000_000 + 5_100)
-      host.tick()
+      tk() // tick 2 (nowMs 1_000_100): grace = 1_000_100 - 995_075 = 5025ms ≥ 5000 → killed in-sim
       snap = lastMsg(c1)
       if (snap.t !== 'snap') throw new Error('expected snap')
       mine = snap.state.snakes.find((s) => s[0] === 0)!
@@ -260,7 +284,7 @@ describe('SnakeMatchHost', () => {
     expect(s1.bots).toEqual([false, false, true, true])
     expect(s1.names.slice(0, 2)).toEqual(['one', 'two'])
     expect(host.join(conn(), 'late')).toBeNull()
-    expect(host.tick().type).toBe('running')
+    expect(host.tick(peekStartMs(host) + T_MS).type).toBe('running')
   })
 
   it('start deadline with zero connected sockets → empty (room is tombstoned, no start ever sent)', () => {
@@ -301,7 +325,7 @@ describe('SnakeMatchHost', () => {
     ;(host as unknown as { state: MatchState }).state = nearEnd
 
     const sentBefore = conns[1]!.sent.length
-    expect(host.tick()).toEqual({ type: 'ended' })
+    expect(host.tick(peekStartMs(host) + T_MS)).toEqual({ type: 'ended' }) // one step stamps the result
     for (const c of conns) {
       expect(c.sent.length).toBe(sentBefore + 2)
       const snap = parseSnakeServerMsg(c.sent.at(-2)!)
@@ -313,8 +337,35 @@ describe('SnakeMatchHost', () => {
     }
     expect(() => host.handleMessage(0, JSON.stringify({ t: 'input', dir: 'up' }))).not.toThrow()
     expect(() => host.leave(0)).not.toThrow()
-    expect(host.tick()).toEqual({ type: 'empty' })
+    expect(host.tick(peekStartMs(host) + 2 * T_MS)).toEqual({ type: 'empty' }) // ended: inert regardless of clock
     expect(conns[0]!.sent.length).toBe(sentBefore + 2)
+  })
+
+  it('production alarm latency (~75ms) must not slow the match: sim ticks track real elapsed time, not the alarm count', () => {
+    // Reproduces the live ~35% slowdown: Cloudflare alarm processing + reschedule latency stretched
+    // the effective alarm period to ~75ms, so a per-alarm-counted sim advanced at ~13Hz instead of
+    // the designed 20Hz — the whole match ran uniformly slow. A TIME-DERIVED tick runs as many 20Hz
+    // steps as real elapsed time calls for, so the sim tracks wall time regardless of the alarm rate.
+    vi.useFakeTimers()
+    vi.setSystemTime(2_000_000)
+    try {
+      // 4 humans, zero input: no snake dies within this window (verified across seeds), so the match
+      // never ends and state.tick is a clean, deterministic readout of how many sim steps ran.
+      const host = new SnakeMatchHost(4)
+      for (const n of ['a', 'b', 'c', 'd']) host.join(conn(), n)
+      const startMs = peekStartMs(host)
+      for (let alarm = 1; alarm <= 40; alarm++) {
+        const nowMs = startMs + alarm * 75 // alarms arrive every ~75ms (the stretched live period)
+        vi.setSystemTime(nowMs)
+        host.tick(nowMs)
+      }
+      // 40 alarms ≈ 3s of real time. Time-derived: floor(3000 / 50) = 60 sim ticks. A per-alarm
+      // counter would sit at 40 (the ~13Hz sag). Each 75ms alarm advances the sim by 1–2 steps
+      // (never near MAX_CATCHUP_STEPS = 4), so no catch-up is dropped.
+      expect(peekState(host).tick).toBe(60)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -421,6 +472,10 @@ describe('SnakeMatchDO', () => {
   it('arms the start deadline at host creation; when it fires with 2 of 3 humans helloed, the match force-starts and ticks', async () => {
     const pairs: FakeSocket[][] = []
     stubWorkersGlobals(pairs)
+    // Fake timers: tick() is time-derived, so the tick-phase alarm must see ≥ one TICK_MS of wall
+    // time elapse past the force-start instant (startMs) to run a sim step and broadcast a snap.
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
     try {
       const { state, calls } = fakeDoState()
       const doInstance = new SnakeMatchDO(state)
@@ -434,16 +489,18 @@ describe('SnakeMatchDO', () => {
       s2.dispatch('message', { data: JSON.stringify({ t: 'hello', name: 'two' }) })
       expect(s1.sent).toHaveLength(0)
 
-      await doInstance.alarm()
+      await doInstance.alarm() // deadline fires pre-start → force-start records startMs = now
       const start = parseSnakeServerMsg(s1.sent.at(-1)!)
       if (start?.t !== 'start') throw new Error('expected start')
       expect(start.bots).toEqual([false, false, true, true])
       expect(calls.setAlarm).toBe(2)
 
+      vi.setSystemTime(1_000_000 + 60) // ≥ one 50ms tick past startMs → the tick alarm runs a step
       await doInstance.alarm()
       const snap = parseSnakeServerMsg(s2.sent.at(-1)!)
       expect(snap?.t).toBe('snap')
     } finally {
+      vi.useRealTimers()
       vi.unstubAllGlobals()
     }
   })

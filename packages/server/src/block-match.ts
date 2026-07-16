@@ -157,7 +157,7 @@ export class BlockMatchHost {
     // Never-decreasing guard against clock weirdness (NTP step-back / a stale alarm firing late).
     this.wallTick = Math.max(this.wallTick, Math.floor((nowMs - this.startMs) / TICK_MS))
     this.alarms += 1
-    this.applyGraceExpiry(Date.now())
+    this.applyGraceExpiry(nowMs) // grace deadline is wall time; reuse tick()'s nowMs (no 2nd clock read)
 
     // 1. Human slots: apply this sweep's buffered batches (each advances that board on its own
     //    clock, routing any attack to the opponent).
