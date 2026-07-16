@@ -33,8 +33,14 @@ export default {
     }
 
     // Bomber routes: same shape as chess's, kept outside the shared fragwait router.
+    // 'bomber-2', not 'bomber': the original named instance wedged at the Cloudflare
+    // infrastructure level on 2026-07-16 — every fetch returned "internal error;
+    // reference = …" (no JS stack) across two clean redeploys while the identical
+    // bundle worked under wrangler dev. Lobby state is ephemeral in-memory rooms, so
+    // pointing at a fresh instance loses nothing. If a lobby ever 1101s again with a
+    // CF-internal reference string, this rename is the remedy (bump the suffix).
     if (url.pathname === '/bomber/join' && req.method === 'POST') {
-      return env.BOMBER_LOBBY.get(env.BOMBER_LOBBY.idFromName('bomber')).fetch(req)
+      return env.BOMBER_LOBBY.get(env.BOMBER_LOBBY.idFromName('bomber-2')).fetch(req)
     }
     const bomberMatchId = parseBomberMatchId(url.pathname)
     if (bomberMatchId && req.method === 'GET') {
