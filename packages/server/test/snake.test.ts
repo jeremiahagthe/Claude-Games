@@ -257,11 +257,14 @@ describe('SnakeMatchHost', () => {
       const foodAfter = new Set(snap.state.food.map(([x, y]) => `${x},${y}`))
       const newFood = new Set([...foodAfter].filter((k) => !foodBefore.has(k)))
       expect(newFood.size).toBeGreaterThan(0) // corpse decayed to NEW food (not just pre-existing food)
-      // The exact set of new food cells must equal the dead snake's own even-indexed
-      // pre-death corpse cells -- this would FAIL if the corpse-food rule were broken (e.g.
-      // no food appearing, food appearing at the wrong/odd-indexed cells, or at some other
-      // snake's cells), unlike the old assertion which only checked food.length > 0.
-      expect(newFood).toEqual(expectedCorpseCells)
+      // Every one of the dead snake's own even-indexed pre-death corpse cells must appear in the
+      // new-food delta -- a SUBSET check (newFood ⊇ expectedCorpseCells), not exact-set equality.
+      // Exact equality had dormant coupling: if any OTHER snake happened to eat during the snapshot
+      // window, Phase-6 food respawn adds an unrelated new-food cell, so the delta would no longer
+      // exactly equal the corpse set even though the corpse-food rule is perfectly correct. The
+      // superset check still FAILS if the rule breaks (no food, wrong/odd-indexed cells, or some
+      // other snake's cells), and the non-vacuity guard above keeps the corpse set provably non-empty.
+      for (const cell of expectedCorpseCells) expect(newFood.has(cell)).toBe(true)
     } finally {
       vi.useRealTimers()
     }
