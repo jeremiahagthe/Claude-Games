@@ -23,7 +23,7 @@
     {
       "id": "blockwait",
       "title": "blockwait — terminal block-stacking duel",
-      "cmd": "npx -y blockwait@0.1.0"
+      "cmd": "npx -y blockwait@0.1.1"
     }
   ]
 }

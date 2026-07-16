@@ -292,7 +292,7 @@ OUT5=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE=
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
 echo "$OUT5" | grep -q "blockwait" || fail "real five-entry rotation pick 5 expected blockwait, got: $OUT5"
 grep -q '"next":5' "$T_HOME/.fragwait/rotation.json" || fail "real five-entry rotation state after pick 5 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
-grep -qF "ARG:npx -y blockwait@0.1.0" "$RECORD" || fail "tmux shim did not receive the real blockwait registry cmd: $(cat "$RECORD")"
+grep -qF "ARG:npx -y blockwait@0.1.1" "$RECORD" || fail "tmux shim did not receive the real blockwait registry cmd: $(cat "$RECORD")"
 
 OUT6=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
@@ -352,7 +352,7 @@ echo "PASS: synthetic fragwait/checkwait/boomwait/snakewait four-game registry c
 # Test 11: five-entry registry (fragwait + checkwait + boomwait + snakewait +
 # blockwait, the shape games.json will have once blockwait ships in Task 13)
 # cycles 1 -> 2 -> 3 -> 4 -> 5 -> 1 on consecutive launches, and the
-# blockwait pick's cmd (npx -y blockwait@0.1.0) passes through to the tmux
+# blockwait pick's cmd (npx -y blockwait@0.1.1) passes through to the tmux
 # shim untouched. games.json itself is NOT touched by this task -- this is a
 # synthetic fixture standing in for the post-release registry. NOTE: the
 # @0.1.0 pin here is synthetic (this test's fixture only) -- the real version
@@ -367,7 +367,7 @@ cat > "$T_ROOT/games.json" <<'JSON'
   {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.7"},
   {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.2"},
   {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.0"},
-  {"id":"blockwait","title":"blockwait — terminal block-stacking duel","cmd":"npx -y blockwait@0.1.0"}
+  {"id":"blockwait","title":"blockwait — terminal block-stacking duel","cmd":"npx -y blockwait@0.1.1"}
 ]}
 JSON
 
@@ -397,7 +397,7 @@ OUT5=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE=
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
 echo "$OUT5" | grep -q "blockwait" || fail "five-entry rotation pick 5 expected blockwait, got: $OUT5"
 grep -q '"next":5' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 5 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
-grep -qF "ARG:npx -y blockwait@0.1.0" "$RECORD" || fail "tmux shim did not receive the blockwait registry cmd: $(cat "$RECORD")"
+grep -qF "ARG:npx -y blockwait@0.1.1" "$RECORD" || fail "tmux shim did not receive the blockwait registry cmd: $(cat "$RECORD")"
 
 OUT6=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
   PATH="$SHIMS:$PATH" bash "$LAUNCHER")
