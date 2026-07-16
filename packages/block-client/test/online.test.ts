@@ -443,6 +443,59 @@ describe('runOnline input batching', () => {
   })
 })
 
+// --- wall-time catch-up wiring (drift fix, feel-gate round 2) ---------------------------------
+//
+// The helpers pin the arithmetic; this pins the LOOP WIRING under drift, which lockstep fake
+// timers never exercise (each fire sees exactly +50ms → steps always 1). vi.setSystemTime shifts
+// Date.now WITHOUT firing timers, so one fire can observe extra (or missing) elapsed time:
+//   • +50ms extra → steps=2: input drains ONCE and rides the first step; the catch-up tick is
+//     empty-input; the flush stamps upTo at the caught-up tick (6, not the fire-count 5).
+//   • −50ms (timer early) → steps=0: no drain, no step, nothing sent.
+
+describe('runOnline wall-time catch-up (steps=2 burst and steps=0 idle fires)', () => {
+  it('drains input once per fire, stamps catch-up ticks empty, idles when ahead of wall time', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '1' }) }))
+    FakeWs.script = (ws) => humanStart(ws) // start only — pure local sim
+
+    let drains = 0
+    let quit = false
+    const game = await import('../src/game.js')
+    vi.mocked(game.setupGame).mockImplementation(
+      async () =>
+        mockSetupGame({
+          drainInput: () => (++drains === 5 ? ['right'] : []) as unknown[],
+          quitRequested: () => quit,
+        }) as never,
+    )
+
+    const { runOnline } = await import('../src/online.js')
+    const resultPromise = runOnline({ server: 'http://s', name: 'you' })
+    // Reach the state "4 lockstep fires done" (local ticks 1..4, no flush yet) by counting drains,
+    // not absolute time — the loop installs at a small fake-time offset (ws open/start 0-timers).
+    while (drains < 4) await vi.advanceTimersByTimeAsync(50)
+    // Fire 5 observes +100ms of wall time (50 shifted + 50 advanced) → target 6, steps=2. The
+    // 'right' from drain #5 stamps at the FIRST step's tick (5); catch-up tick 6 is empty-input.
+    vi.setSystemTime(Date.now() + 50)
+    await vi.advanceTimersByTimeAsync(50)
+    const ws = FakeWs.instances.at(-1)!
+    const afterBurst = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'input')
+    expect(drains).toBe(5) // once per FIRE — a per-step drain would have hit 6
+    expect(afterBurst).toEqual([{ t: 'input', seq: 0, upTo: 6, events: [[5, 1]] }])
+
+    // Fire 6 observes ZERO net elapsed time (clock pulled back 50, then advanced 50) → steps=0:
+    // no drain, no tick, nothing sent — the loop idles until wall time catches back up.
+    vi.setSystemTime(Date.now() - 50)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(drains).toBe(5)
+    expect(ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'input')).toHaveLength(1)
+
+    quit = true
+    await vi.advanceTimersByTimeAsync(100)
+    await resultPromise
+  })
+})
+
 // --- resync adoption vs the server's accepted floor (reviewer finding, fix round) ------------
 //
 // resyncFlag adoption can move the local clock BACKWARD (snapYou.tick < local.tick), but the
