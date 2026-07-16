@@ -405,4 +405,92 @@ echo "$OUT6" | grep -q "fragwait" || fail "five-entry rotation pick 6 expected w
 grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "five-entry rotation state after pick 6 (wraparound) unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
 echo "PASS: synthetic fragwait/checkwait/boomwait/snakewait/blockwait five-game registry cycles 1->2->3->4->5->1 with blockwait cmd passthrough"
 
-echo "PASS: games-launch rotation + terminal-surface detection all behave"
+# ------------------------------------------------------------------------
+# Test 10: --pick mode (/play). Direct pick launches the named game, resolves
+# unique id prefixes and title substrings, NEVER touches rotation state, and
+# lists the arcade on a missing/unknown/ambiguous name (again without
+# launching or touching state).
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cat > "$T_ROOT/games.json" <<'JSON'
+{"games":[
+  {"id":"alpha","title":"Alpha Game","cmd":"echo alpha"},
+  {"id":"bravo","title":"Bravo Game","cmd":"echo bravo"},
+  {"id":"charlie","title":"Charlie Duel","cmd":"echo charlie"}
+]}
+JSON
+
+RECORD="$WORK/tmux_pick.txt"
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick bravo)
+echo "$OUT" | grep -q "Bravo Game" || fail "pick exact id expected Bravo Game, got: $OUT"
+grep -qF "ARG:echo bravo" "$RECORD" || fail "pick exact id did not launch bravo's cmd: $(cat "$RECORD")"
+[ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "pick mode must not create/advance rotation state, found: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick ch)
+echo "$OUT" | grep -q "Charlie Duel" || fail "pick unique id prefix 'ch' expected Charlie Duel, got: $OUT"
+grep -qF "ARG:echo charlie" "$RECORD" || fail "pick prefix did not launch charlie's cmd: $(cat "$RECORD")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick duel)
+echo "$OUT" | grep -q "Charlie Duel" || fail "pick title substring 'duel' expected Charlie Duel, got: $OUT"
+
+# 'game' matches Alpha Game AND Bravo Game by title -> ambiguous -> menu, no launch.
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick game)
+echo "$OUT" | grep -q "no game matches 'game'" || fail "ambiguous pick expected the menu message, got: $OUT"
+echo "$OUT" | grep -q "alpha, bravo, charlie" || fail "ambiguous pick expected the id list, got: $OUT"
+[ ! -s "$RECORD" ] || fail "ambiguous pick must not launch anything: $(cat "$RECORD")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick zulu)
+echo "$OUT" | grep -q "no game matches 'zulu'" || fail "unknown pick expected the menu message, got: $OUT"
+[ ! -s "$RECORD" ] || fail "unknown pick must not launch anything: $(cat "$RECORD")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick)
+echo "$OUT" | grep -q "pick one of: alpha, bravo, charlie" || fail "argless pick expected the arcade list, got: $OUT"
+[ ! -s "$RECORD" ] || fail "argless pick must not launch anything: $(cat "$RECORD")"
+[ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "menu paths must not touch rotation state"
+
+# Rotation is untouched by all the picks above: the next ROTATE launch still
+# starts at alpha (index 0), and picks interleaved with rotation don't skew it.
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT" | grep -q "Alpha Game" || fail "rotation after picks expected to still start at Alpha Game, got: $OUT"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "rotation state after first rotate launch unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "PASS: --pick launches by id/prefix/title, menus on missing/unknown/ambiguous, never touches rotation"
+
+# ------------------------------------------------------------------------
+# Test 11: --pick against the REAL shipped registry ('/play blockwait' and the
+# 'bomber' title-substring alias) passes the real pinned cmd through.
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cp "$REPO_ROOT/plugin/games.json" "$T_ROOT/games.json"
+
+RECORD="$WORK/tmux_pick_real.txt"
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick blockwait)
+echo "$OUT" | grep -q "blockwait" || fail "real pick blockwait expected blockwait, got: $OUT"
+grep -qF "ARG:npx -y blockwait@0.1.1" "$RECORD" || fail "real pick did not pass the pinned blockwait cmd: $(cat "$RECORD")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick bomber)
+echo "$OUT" | grep -q "boomwait" || fail "real pick 'bomber' (title substring) expected boomwait, got: $OUT"
+grep -qF "ARG:npx -y boomwait@0.1.3" "$RECORD" || fail "real pick 'bomber' did not pass the pinned boomwait cmd: $(cat "$RECORD")"
+[ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "real picks must not touch rotation state"
+echo "PASS: real-registry --pick blockwait + 'bomber' title alias pass pinned cmds through, rotation untouched"
+
+echo "PASS: games-launch rotation + --pick + terminal-surface detection all behave"

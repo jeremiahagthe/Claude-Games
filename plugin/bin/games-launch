@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
-# Launch the next game in the arcade rotation on a separate terminal surface
-# (Claude owns this TTY). Reads plugin/games.json, advances rotation state in
-# ~/.fragwait/rotation.json (the runtime dir the fragwait client already owns),
-# and opens the picked game's cmd on the best available terminal surface.
+# Launch a game from the arcade on a separate terminal surface (Claude owns
+# this TTY). Two modes:
+#   games-launch              rotation (/games): next game in the cycle; advances
+#                             ~/.fragwait/rotation.json on a successful launch
+#   games-launch --pick NAME  direct pick (/play): launch NAME (exact id, unique
+#                             id prefix, or unique title substring). Never touches
+#                             the rotation state. No/unknown NAME lists the arcade.
+# Reads plugin/games.json and opens the picked game's cmd on the best available
+# terminal surface.
 set -u
+
+MODE="rotate"
+QUERY=""
+if [ "${1:-}" = "--pick" ]; then
+  MODE="pick"
+  shift
+  QUERY="${*:-}"
+fi
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 REGISTRY="$ROOT/games.json"
@@ -27,7 +40,7 @@ APPS_DIR="${GAMES_APPS_DIR:-/Applications}"
 # launches (or hands off) the game.
 PICK_OUTPUT=$(node -e '
 const fs = require("fs");
-const [registryPath, statePath] = process.argv.slice(1);
+const [registryPath, statePath, mode, query] = process.argv.slice(1);
 let games;
 try {
   const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8"));
@@ -36,6 +49,24 @@ try {
 } catch (e) {
   process.stderr.write("games-launch: bad registry at " + registryPath + ": " + e.message + "\n");
   process.exit(1);
+}
+if (mode === "pick") {
+  // Direct pick: exact id, then unique id prefix, then unique case-insensitive
+  // title substring ("bomber" finds boomwait via its title). Empty / unknown /
+  // ambiguous emits the __MENU__ sentinel: line 2 = id list, line 3 = the query
+  // (empty when none was given), line 4 = empty (no rotation write in pick mode).
+  const q = (query || "").trim().toLowerCase();
+  const idList = games.map((g) => g.id).join(", ");
+  let m = games.filter((g) => (g.id || "") === q);
+  if (q && m.length === 0) m = games.filter((g) => (g.id || "").startsWith(q));
+  if (q && m.length === 0) m = games.filter((g) => (g.title || "").toLowerCase().includes(q));
+  if (!q || m.length !== 1) {
+    process.stdout.write(["__MENU__", idList, q, ""].join("\n"));
+    process.exit(0);
+  }
+  const game = m[0];
+  process.stdout.write([game.id || "", game.title || game.id || "game", game.cmd || "", ""].join("\n"));
+  process.exit(0);
 }
 let next = 0;
 try {
@@ -47,16 +78,30 @@ try {
 const idx = next % games.length;
 const game = games[idx];
 process.stdout.write([game.id || "", game.title || game.id || "game", game.cmd || "", String(idx + 1)].join("\n"));
-' "$REGISTRY" "$STATE_FILE") || { echo "games: could not read the games registry at $REGISTRY"; exit 0; }
+' "$REGISTRY" "$STATE_FILE" "$MODE" "$QUERY") || { echo "games: could not read the games registry at $REGISTRY"; exit 0; }
 
 GAME_ID=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '1p')
 GAME_TITLE=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '2p')
 GAME_CMD=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '3p')
 NEXT_STATE=$(printf '%s\n' "$PICK_OUTPUT" | sed -n '4p')
 
+# Pick-mode menu: no launch, no rotation write. Line 2 carried the id list and
+# line 3 the unmatched query (empty when /play was run without an argument).
+if [ "$GAME_ID" = "__MENU__" ]; then
+  if [ -n "$GAME_CMD" ]; then
+    echo "games: no game matches '$GAME_CMD' - pick one of: $GAME_TITLE"
+  else
+    echo "games: pick one of: $GAME_TITLE"
+  fi
+  exit 0
+fi
+
 # Advance rotation.json to the next pick. Call this exactly once, right
 # before a success exit -- never speculatively before a launch is attempted.
+# In --pick mode NEXT_STATE is empty and this is deliberately a no-op: a direct
+# pick must never burn or skew the /games rotation slot.
 advance_rotation() {
+  [ -n "$NEXT_STATE" ] || return 0
   printf '{"next":%s}' "$NEXT_STATE" > "$STATE_FILE"
 }
 
