@@ -117,10 +117,39 @@ describe('side HUD spec content (Fix 3)', () => {
     // Guards against slicing straight through an escape sequence (which would leave a
     // truncated/unbalanced code and bleed color into the next line) — every line that opens
     // a swatch color must also close it before the line ends (ESC[K).
-    for (const line of out.split('\x1b[K\r\n')) {
+    for (const line of out.split('\r\n\x1b[K')) {
       const opens = (line.match(/\x1b\[(?:38|48);2;\d+;\d+;\d+m|\x1b\[9\dm/g) ?? []).length
       const resets = (line.match(/\x1b\[0m/g) ?? []).length
       if (opens > 0) expect(resets).toBeGreaterThanOrEqual(1)
     }
+  })
+})
+
+// Raw (pre-strip) escape framing pin — mirrors snakewait's renderFrame contract
+// (packages/snake-client/test/render.test.ts). The ESC[K clear-to-EOL sits at the
+// START of each line so it never erases the 80th column of an exactly-80-column
+// line on an 80-column terminal (VT pending-wrap; snakewait feel-gate lesson).
+const ESC = '\x1b'
+const FRAME_SEP = `\r\n${ESC}[K`
+
+describe('frame repaints in place (no terminal scroll, no column-80 erase)', () => {
+  const s = () => createMatch(42, ['you', 'bot1', 'bot2', 'bot3'], [false, true, true, true])
+  const layout = { r: 2, sideHud: true, glyph: false }
+
+  it('renderFrame: starts with ESC[H ESC[K, lines joined by \\r\\n ESC[K, ends with ESC[J', () => {
+    const frame = renderFrame(s(), 0, layout, 'status', 'truecolor')
+    expect(frame.startsWith(`${ESC}[H${ESC}[K`)).toBe(true)
+    expect(frame.endsWith(`${ESC}[J`)).toBe(true)
+    expect(frame).toContain(FRAME_SEP)
+    // Every line boundary uses \r\n ESC[K, never a bare '\n' — a lone '\n' not
+    // followed by ESC[K would mean a line broke without clearing to EOL.
+    const withoutSep = frame.split(FRAME_SEP).join('')
+    expect(withoutSep.includes('\n')).toBe(false)
+  })
+
+  it('renderFrame: mono mode carries no trailing RESET (no SGR to reset)', () => {
+    const frame = renderFrame(s(), 0, layout, 'status', 'mono')
+    expect(frame.endsWith(`${ESC}[J`)).toBe(true)
+    expect(frame.endsWith(`${ESC}[0m${ESC}[J`)).toBe(false)
   })
 })

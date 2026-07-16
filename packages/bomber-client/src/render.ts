@@ -329,7 +329,13 @@ export function renderFrame(s: BomberState, you: number, layout: Layout, claude:
   // Per-line clear-to-EOL (ESC[K) kills resize residue to the right of every
   // line (checkwait/chess-4 lesson); trailing ESC[J kills residue below —
   // the renderer never scrolls, so both are always safe. Mono frames carry no
-  // SGR at all, so there is nothing to reset there.
+  // SGR at all, so there is nothing to reset there. The ESC[K sits at the START
+  // of each line (leading ESC[H ESC[K, then \r\n ESC[K between lines) rather
+  // than the end: a trailing ESC[K after an exactly-80-visible-column line
+  // lands on an 80-column terminal with the cursor parked in VT pending-wrap at
+  // column 80 and erases that just-written 80th column (snakewait feel-gate
+  // lesson). A leading ESC[K clears the row before content lands, so it never
+  // interacts with the pending-wrap state a full-width line leaves behind.
   const tail = mode === 'mono' ? '' : RESET
-  return `${ESC}[H` + lines.join(`${ESC}[K\r\n`) + tail + `${ESC}[J`
+  return `${ESC}[H${ESC}[K` + lines.join(`\r\n${ESC}[K`) + tail + `${ESC}[J`
 }

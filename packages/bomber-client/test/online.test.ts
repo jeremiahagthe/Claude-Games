@@ -13,6 +13,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // only the transport is faked, exactly reproducing the two-messages-in-one-macrotask race.
 const { FakeWs } = vi.hoisted(() => {
   class FakeWs {
+    // Per-test server script, run one macrotask after the client's hello. null = the default
+    // coalesced start+snap chunk below (the TDZ regression's exact trigger). The finale test
+    // installs its own script (start now, then close in a LATER macrotask — a post-seed
+    // message must arrive after runOnline's createMatch seeding to survive it).
+    static script: ((ws: FakeWs) => void) | null = null
     readyState = 1 // OPEN
     sent: string[] = []
     private handlers: Record<string, Array<(...a: unknown[]) => void>> = {}
@@ -28,40 +33,37 @@ const { FakeWs } = vi.hoisted(() => {
       const msg = JSON.parse(data)
       if (msg.t !== 'hello') return
       setTimeout(() => {
+        if (FakeWs.script) {
+          FakeWs.script(this)
+          return
+        }
         // The coalesced chunk: start, then immediately (same macrotask, no yield back to the
         // microtask queue in between) the first snap.
-        this.emit(
-          'message',
-          Buffer.from(
-            JSON.stringify({
-              t: 'start',
-              you: 0,
-              seed: 42,
-              names: ['you', 'b', 'c', 'd'],
-              bots: [false, true, true, true],
-              startTick: 0,
-            }),
-          ),
-        )
-        this.emit(
-          'message',
-          Buffer.from(
-            JSON.stringify({
-              t: 'snap',
-              state: {
-                tick: 1,
-                g: '0'.repeat(13 * 11),
-                players: [[0, 'you', 0, 1, 1, 1, 1, 1, 0, 0, 0, 0]],
-                bombs: [],
-                flames: [],
-                drops: [],
-                shrinkIndex: -1,
-                result: null,
-              },
-            }),
-          ),
-        )
+        this.emitJson({
+          t: 'start',
+          you: 0,
+          seed: 42,
+          names: ['you', 'b', 'c', 'd'],
+          bots: [false, true, true, true],
+          startTick: 0,
+        })
+        this.emitJson({
+          t: 'snap',
+          state: {
+            tick: 1,
+            g: '0'.repeat(13 * 11),
+            players: [[0, 'you', 0, 1, 1, 1, 1, 1, 0, 0, 0, 0]],
+            bombs: [],
+            flames: [],
+            drops: [],
+            shrinkIndex: -1,
+            result: null,
+          },
+        })
       }, 0)
+    }
+    emitJson(msg: unknown): void {
+      this.emit('message', Buffer.from(JSON.stringify(msg)))
     }
     emit(ev: string, ...args: unknown[]): void {
       for (const cb of this.handlers[ev] ?? []) cb(...args)
@@ -100,6 +102,8 @@ vi.mock('../src/game.js', async (importOriginal) => {
 })
 
 afterEach(() => {
+  FakeWs.script = null
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -124,5 +128,71 @@ describe('runOnline mirror seeding (Fix 2: TDZ regression)', () => {
     } finally {
       process.off('uncaughtException', onUncaught)
     }
+  })
+})
+
+// --- finale construction (closedEarly) -------------------------------------------------------
+//
+// Backported from snakewait's online.test.ts closedEarly case. The TDZ test above quits on the
+// loop's first check, so it never reaches the finale block. This test runs the loop for real
+// (quitRequested false) under FAKE timers — no wall-clock sleeping — with a per-test FakeWs.script
+// driving the server side: `start` immediately, then `close` one macrotask LATER (10ms), because
+// runOnline's createMatch seeding unconditionally overwrites any message that lands before it.
+// teardownAndExit stays mocked; the test asserts on the `finale` object runOnline passes it.
+// (bomber's chooseLayout never returns null — it falls back to glyph mode — so snake's layout-null
+// finale half does not apply here; only the abnormal-close / closedEarly path is backported.)
+
+const HUMAN_NAMES = ['you', 'b', 'c', 'd']
+
+function humanStart(ws: InstanceType<typeof FakeWs>): void {
+  ws.emitJson({ t: 'start', you: 0, seed: 42, names: HUMAN_NAMES, bots: [false, false, false, true], startTick: 0 })
+}
+
+const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '')
+
+async function runFinale(
+  script: (ws: InstanceType<typeof FakeWs>) => void,
+): Promise<{ screen: string; shareText: string }> {
+  vi.useFakeTimers()
+  vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: 't1' }) }))
+  FakeWs.script = script
+
+  const game = await import('../src/game.js')
+  vi.mocked(game.setupGame).mockImplementation(async () => ({
+    term: { write: vi.fn(), enter: vi.fn(), installExitGuards: vi.fn(), restore: vi.fn() },
+    parser: {},
+    colorMode: 'truecolor',
+    listener: { close: vi.fn(async () => {}), onEvent: vi.fn() },
+    layout: () => ({ r: 2, sideHud: true, glyph: false }),
+    drainInput: () => ({ dir: null, bomb: false }),
+    statusLine: () => '',
+    quitRequested: () => false, // the match itself must end the loop, not a quit
+    onResize: () => {},
+    dispose: vi.fn(),
+  }) as never)
+
+  const { runOnline } = await import('../src/online.js')
+  const resultPromise = runOnline({ server: 'http://s', name: 'you' })
+  await vi.advanceTimersByTimeAsync(200)
+  const outcome = await resultPromise
+  expect(outcome).toBe('teardown-called')
+
+  const finale = vi.mocked(game.teardownAndExit).mock.calls.at(-1)![0].finale
+  expect(finale).not.toBeNull()
+  return { screen: stripAnsi(finale!.screen), shareText: finale!.shareText }
+}
+
+describe('runOnline finale (closedEarly)', () => {
+  it('synthesizes a not-you loss on an abnormal post-start close with no EndMsg', async () => {
+    const { screen, shareText } = await runFinale((ws) => {
+      humanStart(ws)
+      setTimeout(() => ws.emit('close', 1006, Buffer.from('connection lost')), 10)
+    })
+    // closedEarly synthesizes winner = (you + 1) % MAX_PLAYERS = 1 (not you), so the finale
+    // reads as a loss; the whole finale (resultLine + renderFrame + shareCard) renders without
+    // crashing.
+    expect(screen).toContain('you lost — press any key')
+    expect(shareText).toContain('lost')
+    expect(shareText).toContain('b, c, d') // opponents list from StartMsg names
   })
 })
