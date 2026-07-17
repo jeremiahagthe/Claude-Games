@@ -30,6 +30,11 @@ export function animAllowanceMs(steps: number): number {
 // from a match-seeded rng so a bot "thinks" for 2–4s rather than firing instantly.
 export const BOT_DELAY_BASE_MS = 2000
 export const BOT_DELAY_SPREAD_MS = 2000
+// Getting {matchId, token} from POST /tank/join and actually opening the ws are separate steps -- a
+// client can vanish in between. Without a deadline the human who DID connect to a humanCount=2 room
+// would wait forever (start() fires only at conns.size === humanCount). Same rationale as
+// block-match.ts's START_DEADLINE_MS: when it fires pre-start, the no-show slot converts to a bot.
+export const START_DEADLINE_MS = 15_000
 
 export function parseTankMatchId(pathname: string): string | null {
   // A DO id from idFromString() is always exactly 64 lowercase hex chars; anything else would make
@@ -90,6 +95,22 @@ export class TankMatchHost {
     let alarmAt: number | null = null
     if (this.conns.size === this.humanCount) alarmAt = this.start()
     return { slot, alarmAt }
+  }
+
+  hasStarted(): boolean {
+    return this.started
+  }
+
+  // Start-deadline path (see START_DEADLINE_MS): the lobby promised humanCount humans but only some
+  // (or none) opened the ws by the deadline. Whoever HAS joined plays -- start() derives bots from
+  // the missing conns, so a no-show human slot becomes a 'normal' bot exactly like a lobby backfill.
+  // Zero connected -> 'empty': the caller tombstones the room (block-match.ts's forceStart shape).
+  // Idempotent under a deadline racing a natural start: already started -> 'none' (the turn alarm
+  // chain is live; nothing to schedule, nothing to tombstone).
+  forceStart(): { type: 'started'; alarmAt: number } | { type: 'empty' } | { type: 'none' } {
+    if (this.started) return { type: 'none' }
+    if (this.conns.size === 0) return { type: 'empty' }
+    return { type: 'started', alarmAt: this.start() }
   }
 
   /** First message from an already-joined socket. Parses defensively (raw-size cap + safe JSON), then
@@ -216,7 +237,7 @@ export class TankMatchDO implements DurableObject {
       server.close(1002, 'bad token')
       return new Response(null, { status: 101, webSocket: client })
     }
-    if ((this.host ??= new TankMatchHost(humanCount)).humanCount !== humanCount) {
+    if (this.ensureHost(humanCount).humanCount !== humanCount) {
       // A stale/forged token disagreeing with the room this DO already committed to: the matchId is
       // the real secret (an unguessable 64-hex DO id), so this is a defensive consistency check, not
       // auth (same trust model as block-match.ts).
@@ -242,7 +263,7 @@ export class TankMatchDO implements DurableObject {
         server.close(1002, 'expected join')
         return
       }
-      const joined = (this.host ??= new TankMatchHost(humanCount)).join(
+      const joined = this.ensureHost(humanCount).join(
         { send: (d) => server.send(d), close: (code, reason) => server.close(code, reason) },
         msg.name,
       )
@@ -263,9 +284,32 @@ export class TankMatchDO implements DurableObject {
     return new Response(null, { status: 101, webSocket: client })
   }
 
+  // Single alarm handler, dispatched on phase (same one-handler discipline as block-match.ts): a DO
+  // has exactly ONE alarm slot, so the pre-start deadline and the running turn chain never coexist --
+  // the start-triggered turn alarm simply overwrites the pending deadline. hasStarted() is the phase
+  // check that keeps a stale deadline from misfiring into an already-started match.
   async alarm(): Promise<void> {
     if (!this.host) return
+    if (!this.host.hasStarted()) {
+      // The start deadline fired before every promised human joined: the no-show slot converts to a
+      // bot (behaving exactly like a lobby-backfilled bot from then on) and the match starts normally.
+      const r = this.host.forceStart()
+      if (r.type === 'started') void this.state.storage.setAlarm(r.alarmAt)
+      else if (r.type === 'empty') this.applyAction({ type: 'ended' }) // nobody ever joined: dead room
+      return
+    }
     this.applyAction(this.host.onAlarm())
+  }
+
+  private ensureHost(humanCount: number): TankMatchHost {
+    if (!this.host) {
+      this.host = new TankMatchHost(humanCount)
+      // Arm the start deadline the moment the room exists -- once per host, never re-armed per
+      // socket (that would let each straggler extend the wait for everyone already in). A natural
+      // start overwrites it with the first turn alarm (one alarm slot per DO).
+      void this.state.storage.setAlarm(Date.now() + START_DEADLINE_MS)
+    }
+    return this.host
   }
 
   private applyAction(action: HostAction): void {

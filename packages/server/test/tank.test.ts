@@ -15,6 +15,15 @@ import {
 import { TankLobbyQueue, TankLobbyDO, type LobbyOutcome } from '../src/tank-lobby.js'
 import { TankMatchDO, TankMatchHost, parseTankMatchId, type TankConn } from '../src/tank-match.js'
 
+function allOfType<T extends TankServerMsg['t']>(c: { sent: string[] }, t: T): Extract<TankServerMsg, { t: T }>[] {
+  const out: Extract<TankServerMsg, { t: T }>[] = []
+  for (const s of c.sent) {
+    const m = parseTankServerMsg(s)
+    if (m && m.t === t) out.push(m as Extract<TankServerMsg, { t: T }>)
+  }
+  return out
+}
+
 function conn(): TankConn & { sent: string[] } {
   const sent: string[] = []
   return { sent, send: (d: string) => sent.push(d), close: () => {} }
@@ -387,6 +396,59 @@ describe('TankMatchDO', () => {
       a.dispatch('close')
       expect(() => b.dispatch('close')).not.toThrow()
       expect(() => b.dispatch('message', { data: JSON.stringify({ t: 'shot', seq: 1, angle: 45, power: 50 }) })).not.toThrow()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('start-deadline with 1 of 2 humans connected → the no-show slot converts to a bot and the match starts playable', async () => {
+    const pairs: FakeSocket[][] = []
+    stubWorkersGlobals(pairs)
+    try {
+      const doInstance = new TankMatchDO(fakeDoState())
+      await doInstance.fetch(fakeRequest(`https://x/tank/match/${VALID_ID}/ws?token=2`))
+      const a = pairs[0]![1]!
+      a.dispatch('message', { data: JSON.stringify({ t: 'join', name: 'solo' }) })
+      expect(serverMsgs(a).some((m) => m.t === 'start')).toBe(false) // 1 of 2: no start yet
+
+      await doInstance.alarm() // the start deadline fires → no-show slot becomes a bot, match starts
+      const start = lastOfType(a, 'start')!
+      expect(start.you).toBe(0)
+      expect(start.bots).toEqual([false, true]) // the converted slot is a lobby-backfill-style bot
+      expect(lastOfType(a, 'turn')).not.toBeNull()
+
+      // Match is playable: within a few turn alarms the bot slot fires a shot of its own.
+      let botFired = false
+      for (let i = 0; i < 10 && !botFired; i++) {
+        await doInstance.alarm()
+        botFired = allOfType(a, 'shot').some((m) => m.by === 1)
+        if (lastOfType(a, 'end')) break
+      }
+      expect(botFired).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('both humans connect before the deadline → normal start (no bot conversion), and a later alarm never re-starts', async () => {
+    const pairs: FakeSocket[][] = []
+    stubWorkersGlobals(pairs)
+    try {
+      const doInstance = new TankMatchDO(fakeDoState())
+      await doInstance.fetch(fakeRequest(`https://x/tank/match/${VALID_ID}/ws?token=2`))
+      const a = pairs[0]![1]!
+      a.dispatch('message', { data: JSON.stringify({ t: 'join', name: 'alice' }) })
+      await doInstance.fetch(fakeRequest(`https://x/tank/match/${VALID_ID}/ws?token=2`))
+      const b = pairs[1]![1]!
+      b.dispatch('message', { data: JSON.stringify({ t: 'join', name: 'bob' }) })
+
+      const start = lastOfType(a, 'start')!
+      expect(start.bots).toEqual([false, false]) // no conversion: both humans made it
+
+      // A firing alarm now is the TURN alarm (expiry auto-fire), never a second start.
+      await doInstance.alarm()
+      expect(allOfType(a, 'start')).toHaveLength(1)
+      expect(allOfType(a, 'shot').length).toBeGreaterThan(0) // the expiry auto-fired instead
     } finally {
       vi.unstubAllGlobals()
     }
