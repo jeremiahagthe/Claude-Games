@@ -428,7 +428,7 @@ export function botObserve(mind: BotMind, shot: Shot, impactX: number | null): B
 // normal: power ±12%, angle ±3°, correction gain 0.7
 // hard: power ±5%, angle ±1°, correction gain 0.9, first-order wind compensation
 ```
-Decision logic: base angle = 60 shooting right / 120 shooting left (sign of `target.col - self.col`). First shot (`lastImpactX === null`): closed-form power for the horizontal distance `dist = |target.col - self.col|` at the base angle — `v = sqrt(dist * GRAVITY / sin(2·rad))`, `power = clamp(v / POWER_SCALE)`. `hard` first subtracts the estimated wind drift from `dist`: `t ≈ 2·v·sin(rad)/GRAVITY` (one fixed-point iteration from the no-wind v), `drift = 0.5 · wind · WIND_ACCEL · t²`, signed toward the shot direction. Later shots: `err = lastImpactX - target.col` (lost shell → treat as max-range overshoot in the shot direction, err = ±20); corrected power = `lastShot.power · (1 - gain · err / max(dist, 8) )` clamped — overshoot shrinks power, undershoot grows it (range ∝ v²; the linear correction with gain < 1 brackets stably). Then apply difficulty noise to power and angle (two randStep draws, always both, threading mind.rng). Callers record outcomes via `botObserve(mind, shot, out.impact?.x ?? null)` after resolving the bot's shot.
+Decision logic: base angle = 60 shooting right / 120 shooting left (sign of `target.col - self.col`). First shot (`lastImpactX === null`): closed-form power for a DELIBERATELY SHORTENED distance `dist = OPENER_SCALE[d] · |target.col - self.col|` at the base angle — `v = sqrt(dist * GRAVITY / sin(2·rad))`, `power = clamp(v / POWER_SCALE)`, with `OPENER_SCALE = {easy: 0.55, normal: 0.70, hard: 0.90}` (classic artillery doctrine: open short, bracket up — and it is what makes the spec's "normal converges in ~3–4 shots" true; a full-distance opener is near-exact and leaves nothing to correct). [AMENDED at Task 4, user-approved: the original full-distance opener made the convergence gate unreachable.] `hard` first subtracts the estimated wind drift from `dist`: `t ≈ 2·v·sin(rad)/GRAVITY` (one fixed-point iteration from the no-wind v), `drift = 0.5 · wind · WIND_ACCEL · t²`, signed toward the shot direction. Later shots: `err = lastImpactX - target.col` (lost shell → treat as max-range overshoot in the shot direction, err = ±20); corrected power = `lastShot.power · (1 - gain · err / max(dist, 8) )` clamped — overshoot shrinks power, undershoot grows it (range ∝ v²; the linear correction with gain < 1 brackets stably). Then apply difficulty noise to power and angle (two randStep draws, always both, threading mind.rng). Callers record outcomes via `botObserve(mind, shot, out.impact?.x ?? null)` after resolving the bot's shot.
 
 - [ ] **Step 1:** Write failing `test/bot.test.ts`:
 
@@ -487,9 +487,10 @@ describe('bot gates (day one, never loosened)', () => {
         const out = resolveShot(m, dec.shot)
         mind = botObserve(dec.mind, dec.shot, out.impact ? out.impact.x : null)
         misses.push(out.impact ? Math.abs(out.impact.x - 68) : 40)
-        // hand the turn straight back (opponent skips — keep the bot's own state clean):
-        m = { ...out.state, turn: 0, tanks: [out.state.tanks[0]!, { ...out.state.tanks[1]!, hp: 100, alive: true }] }
-        if (!m.tanks[0]!.alive) break
+        // hand the turn straight back in a CONTROLLED world (the gate tests correction, so
+        // wind stays 0 and craters are erased between shots — [AMENDED at Task 4, user-approved:
+        // the original fixture let wind re-roll ±10 and craters sink the target]):
+        m = { ...out.state, turn: 0, wind: 0, heights: new Array(80).fill(12), tanks: [{ ...out.state.tanks[0]!, hp: 100, alive: true }, { ...out.state.tanks[1]!, hp: 100, alive: true }] }
       }
       if (misses.length === 3) expect(misses[2]!, `seed ${seed}: ${misses}`).toBeLessThan(misses[0]! + 0.001)
     }
