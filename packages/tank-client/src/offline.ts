@@ -30,9 +30,9 @@ import { shareCard } from './share.js'
 
 const YOU = 0
 const BOT = 1
-// The offline bot's fixed skill (there is no --difficulty flag; the family
-// defaults to easy, feel-gated as the friendliest bracket).
-const DIFFICULTY: Difficulty = 'easy'
+// The offline bot's fixed skill (there is no --difficulty flag; the spec pins
+// the offline duel as you vs 1 NORMAL bot).
+const DIFFICULTY: Difficulty = 'normal'
 const OPP_HANDLE = 'bot'
 const BOT_THINK_MS = 1500
 
