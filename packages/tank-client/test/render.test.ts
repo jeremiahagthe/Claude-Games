@@ -126,6 +126,27 @@ describe('additional render tests', () => {
     expect(filled45).toBe(5)
   })
 
+  it('hp bar/number never truncate under 24-char names — the name yields instead', () => {
+    const longName = 'x'.repeat(24) // already sanitized (lowercase alnum)
+    for (const [hp0, hp1] of [[7, 100], [100, 7]] as const) {
+      const state = createMatch(7, [longName, longName], [false, true])
+      state.tanks[0]!.hp = hp0
+      state.tanks[1]!.hp = hp1
+      const lines = frameLines(renderFrame(view({ state }), chooseLayout(80, 24)!, 'mono'))
+      const line0 = lines[0]!
+      expect(line0.length).toBe(80)
+      const left = line0.slice(0, 34)
+      const right = line0.slice(46)
+      // full 10-cell hp bar present on both sides (filled + empty cells sum to 10)
+      const barCells = (s: string) => (s.match(/[█░]/g) ?? []).length
+      expect(barCells(left), `left ${JSON.stringify(left)}`).toBe(10)
+      expect(barCells(right), `right ${JSON.stringify(right)}`).toBe(10)
+      // exact hp digits present on both sides
+      expect(left.includes(` ${hp0}`), `left hp ${hp0} in ${JSON.stringify(left)}`).toBe(true)
+      expect(right.includes(`${hp1} `), `right hp ${hp1} in ${JSON.stringify(right)}`).toBe(true)
+    }
+  })
+
   it('clockMsLeft 14_000 renders 0:14', () => {
     const lines = frameLines(renderFrame(view({ clockMsLeft: 14_000 }), chooseLayout(80, 24)!, 'mono'))
     expect(lines[1]!.includes('0:14')).toBe(true)

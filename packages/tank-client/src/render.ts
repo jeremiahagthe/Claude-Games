@@ -252,17 +252,26 @@ function wrapColor(text: string, mode: ColorMode, rgb: Rgb, idx256: number): str
   return `${colorEscape(mode, rgb, idx256)}${text}${RESET}`
 }
 
+// Name display cap: the hp bar and hp number must NEVER truncate — the name
+// yields instead. Residual budget = SIDE_WIDTH minus marker(1) + space(1) +
+// bar(10) + space(1) + 3-digit hp reserve(3) = 34 - 16 = 18.
+const NAME_DISPLAY_MAX = SIDE_WIDTH - (1 + 1 + 10 + 1 + 3)
+
+function displayName(raw: string): string {
+  return sanitizeHandle(raw).slice(0, NAME_DISPLAY_MAX)
+}
+
 function buildHudLine0(v: RenderView, mode: ColorMode): string {
   const { state } = v
   const t0 = state.tanks[0]!
   const t1 = state.tanks[1]!
 
   const marker0 = state.turn === 0 ? '▸' : ' '
-  const leftPlain = padPlain(`${marker0}${sanitizeHandle(t0.name)} ${hpBar(t0.hp)} ${t0.hp}`, SIDE_WIDTH)
+  const leftPlain = padPlain(`${marker0}${displayName(t0.name)} ${hpBar(t0.hp)} ${t0.hp}`, SIDE_WIDTH)
   const leftSeg = state.turn === 0 ? wrapColor(leftPlain, mode, HIGHLIGHT_RGB, HIGHLIGHT_256) : leftPlain
 
   const marker1 = state.turn === 1 ? '◂' : ' '
-  const rightPlain = padPlainRight(`${t1.hp} ${hpBar(t1.hp)} ${sanitizeHandle(t1.name)}${marker1}`, SIDE_WIDTH)
+  const rightPlain = padPlainRight(`${t1.hp} ${hpBar(t1.hp)} ${displayName(t1.name)}${marker1}`, SIDE_WIDTH)
   const rightSeg = state.turn === 1 ? wrapColor(rightPlain, mode, HIGHLIGHT_RGB, HIGHLIGHT_256) : rightPlain
 
   const centerSeg = centerPlain(`round ${state.round}`, CENTER_WIDTH)
