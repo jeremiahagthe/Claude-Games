@@ -88,9 +88,11 @@ export function botDecide(
   rng = a.next
   const angle = baseAngle + (2 * a.value - 1) * k.angleHalf
 
+  // Wire protocol validates angle/power as integers and the server broadcasts
+  // bot shots verbatim — round first, then clamp (so 180.4 → 180).
   const shot: Shot = {
-    angle: clamp(angle, ANGLE_MIN, ANGLE_MAX),
-    power: clamp(power, POWER_MIN, POWER_MAX),
+    angle: clamp(Math.round(angle), ANGLE_MIN, ANGLE_MAX),
+    power: clamp(Math.round(power), POWER_MIN, POWER_MAX),
   }
   return { shot, mind: { rng, lastShot: mind.lastShot, lastImpactX: mind.lastImpactX } }
 }
