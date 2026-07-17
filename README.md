@@ -224,7 +224,7 @@ draw a frame.
 **Game 6: tankwait** — a 1v1 turn-based artillery duel: aim an angle and
 power, fire a shell across the terrain, and try to land it on your opponent
 before they land one on you. Wind (an integer from -10 to 10) is rolled fresh
-each round and pushes shells sideways in flight, so the same angle/power pair
+each turn and pushes shells sideways in flight, so the same angle/power pair
 won't always land in the same place. Each tank starts at 100 HP; a direct or
 splash hit chips HP down, and once a match reaches round 12, sudden death
 kicks in — every tank still standing loses 10 HP at the end of each round on

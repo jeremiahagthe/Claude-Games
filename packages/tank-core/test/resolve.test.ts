@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BLAST_DAMAGE_MAX, BLAST_RADIUS, FALL_DAMAGE_PER_UNIT, FALL_FREE_UNITS, HP_MAX, SUDDEN_DEATH_DECAY, SUDDEN_DEATH_ROUND, WIND_MAX } from '../src/constants.js'
+import { BLAST_DAMAGE_MAX, BLAST_RADIUS, FALL_DAMAGE_PER_UNIT, FALL_FREE_UNITS, FIELD_W, HP_MAX, SPAWN_R, SUDDEN_DEATH_DECAY, SUDDEN_DEATH_ROUND, WIND_MAX } from '../src/constants.js'
 import { createMatch } from '../src/match.js'
 import { blastDamage, carve, killPlayer, resolveShot } from '../src/resolve.js'
 import type { MatchState } from '../src/state.js'
@@ -47,6 +47,26 @@ describe('ballistics (range windows on the flat fixture)', () => {
       for (let p = 0; p <= 100; p += 20)
         for (const w of [-WIND_MAX, 0, WIND_MAX])
           expect(() => resolveShot(flat({ wind: w }), { angle: a, power: p })).not.toThrow()
+  })
+})
+
+describe('balance sanity (spec assertions on the flat fixture)', () => {
+  // Closed-form flat-ground range at the optimal 45° (sin 2θ = 1): R = v0² / GRAVITY,
+  // where v0 = power · POWER_SCALE. Power 48 → v0 = 52.8 → R ≈ 52.8²/40 ≈ 69.7. From col 10
+  // that carries the shell to ≈ col 80 — well past the right spawn zone start (SPAWN_R[0] = 63),
+  // proving a mid-power 45° shot can reach clear across the map to the opponent's half.
+  it('cross-map reach: 45° at power 48 from col 10 reaches at least the right spawn zone (col 63+)', () => {
+    const out = resolveShot(flat(), { angle: 45, power: 48 })
+    const maxX = Math.max(...out.trajectory.map(([x]) => x))
+    expect(maxX).toBeGreaterThanOrEqual(SPAWN_R[0])                 // reached col 63+ (impact or exit)
+    if (out.impact) expect(out.impact.x).toBeGreaterThanOrEqual(SPAWN_R[0])
+  })
+  // Overshoot headroom: full power must leave the field entirely, so 100 is not "just barely max".
+  // v0 = 110 → R ≈ 110²/40 ≈ 302 ≫ FIELD_W (80): the shell departs the right edge before any impact.
+  it('overshoot headroom: 45° at power 100 from col 10 exits the field (impact null)', () => {
+    const out = resolveShot(flat(), { angle: 45, power: 100 })
+    expect(out.impact).toBeNull()
+    expect(out.trajectory.at(-1)![0]).toBeGreaterThanOrEqual(FIELD_W) // departed via the right edge
   })
 })
 

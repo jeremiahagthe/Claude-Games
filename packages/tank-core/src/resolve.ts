@@ -71,7 +71,9 @@ export function resolveShot(m: MatchState, shot: Shot): ResolveOut {
     // (a) left the field → lost shell
     if (x < 0 || x >= FIELD_W) { impact = null; break }
 
-    if (!leftMuzzle && Math.hypot(x - mx, y - my) > 2 * TANK_HIT_RADIUS) leftMuzzle = true
+    // IEEE-exact distance: sqrt(dx²+dy²), NOT Math.hypot — hypot's result varies across V8
+    // versions, so client Node vs server workerd would diverge and trip the desync tripwire.
+    if (!leftMuzzle && Math.sqrt((x - mx) * (x - mx) + (y - my) * (y - my)) > 2 * TANK_HIT_RADIUS) leftMuzzle = true
 
     // (b) tank contact
     let contact = false
@@ -80,7 +82,7 @@ export function resolveShot(m: MatchState, shot: Shot): ResolveOut {
       if (t.id === shooterId && !leftMuzzle) continue
       const cx = t.col
       const cy = heights[t.col]! + 1
-      if (Math.hypot(x - cx, y - cy) <= TANK_HIT_RADIUS) { contact = true; break }
+      if (Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) <= TANK_HIT_RADIUS) { contact = true; break }
     }
     if (contact) { impact = { x, y }; break }
 
@@ -111,7 +113,7 @@ export function resolveShot(m: MatchState, shot: Shot): ResolveOut {
     for (const t of tanks) {
       if (!t.alive) continue
       const preCarveY = m.heights[t.col]!
-      const d = Math.hypot(t.col - ix, preCarveY + 1 - iy)
+      const d = Math.sqrt((t.col - ix) * (t.col - ix) + (preCarveY + 1 - iy) * (preCarveY + 1 - iy))
       const dmg = blastDamage(d)
       t.hp -= dmg
       damage[t.id as 0 | 1] += dmg

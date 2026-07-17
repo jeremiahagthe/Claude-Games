@@ -213,7 +213,19 @@ export async function runOnline(opts: OnlineOpts): Promise<Result | 'fallback'> 
           }
         }
 
-        if (session.quitRequested() || ended !== null || closedEarly || state.result !== null) {
+        // Exit gate. A user quit leaves immediately. Otherwise, once the match is over —
+        // `end`/close arrived, or the last replayed shot stamped a result — we MUST keep ticking
+        // until every echoed shot has been drained AND its playback has finished. The server sends
+        // the killing `shot` bcast together with `end`, so a bare `ended`-triggered exit would drop
+        // that final shot unplayed: no final explosion, a stale pre-shot finale board, share stats
+        // missing the final blow, and the desync tripwire never checking the last shot. Draining
+        // guarantees the final shot goes through applyShotBcast (hash check) and its anim completes
+        // so `state` adopts the final result. NB: a killing shot leaves `phase` stuck at 'anim'
+        // (phase is only re-set when !state.result), so `playback === null` — not `phase` — is the
+        // "no active playback" signal.
+        const matchOver = ended !== null || closedEarly || state.result !== null
+        const drained = pendingShots.length === 0 && playback === null
+        if (session.quitRequested() || (matchOver && drained)) {
           clearInterval(timer)
           resolve()
         }

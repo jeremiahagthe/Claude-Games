@@ -497,5 +497,12 @@ describe('wrangler.jsonc migrations', () => {
         'SNAKE_LOBBY', 'SNAKE_MATCH', 'BLOCK_LOBBY', 'BLOCK_MATCH', 'TANK_LOBBY', 'TANK_MATCH',
       ]),
     )
+    // Bomber class pin (the v6 outage fix): the bindings must point at the FRESH DO namespace,
+    // not the wedged originals. Carried over from block.test.ts when this migration test moved here.
+    const bomberBindings = parsed.durable_objects.bindings.filter((b) => b.name.startsWith('BOMBER_'))
+    expect(bomberBindings).toEqual([
+      { name: 'BOMBER_LOBBY', class_name: 'BomberLobby2DO' },
+      { name: 'BOMBER_MATCH', class_name: 'BomberMatch2DO' },
+    ])
   })
 })

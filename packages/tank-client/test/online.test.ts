@@ -321,6 +321,42 @@ describe('runOnline result precedence (state.result and closedEarly)', () => {
     expect(finale!.shareText).toContain(youWon ? 'won' : 'lost')
   })
 
+  it('end-race: the killing shot + EndMsg arriving together still plays the final shot into state', async () => {
+    // The server sends the killing `shot` bcast together with `end`. A bare ended-triggered exit
+    // would drop that final shot unplayed. Here EndMsg lands in the SAME macrotask as every echo
+    // (the killing shot last); the loop MUST drain + finish playback so `state` adopts the final
+    // result — no stale pre-shot board, and the final shot goes through the hash check.
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '2' }) }))
+    const { bcasts, final } = replayToResult()
+    expect(final.result).not.toBeNull()
+    expect(final.tanks.some((t) => t.hp === 0)).toBe(true) // a loser/decayed tank at hp 0
+
+    FakeWs.script = (ws) => {
+      humanStart(ws)
+      setTimeout(() => {
+        for (const b of bcasts) ws.emitJson(b) // killing shot is the last echo
+        ws.emitJson({ t: 'end', result: [0, 0] }) // …and `end` in the SAME macrotask
+      }, 100)
+    }
+
+    const game = await import('../src/game.js')
+    vi.mocked(game.setupGame).mockImplementation(async () => mockSetupGame({ quitRequested: () => false }) as never)
+
+    const { runOnline } = await import('../src/online.js')
+    const p = runOnline({ server: 'http://s', name: 'you' })
+    await vi.advanceTimersByTimeAsync(300_000) // advance through EVERY shot's anim frames
+    expect(await p).toBe('teardown-called')
+
+    // Playback actually ran (anim frames were rendered), not skipped on the ended flag.
+    expect(renderCalls.some((c) => c.phase === 'anim')).toBe(true)
+    // The finale state is the fully-drained final shot: result stamped, loser at hp 0 —
+    // impossible unless the last shot was replayed AND its playback completed to adopt state.
+    const finaleState = renderCalls.at(-1)!.state
+    expect(finaleState.result).toEqual(final.result)
+    expect(finaleState.tanks.some((t) => t.hp === 0)).toBe(true)
+  })
+
   it('synthesizes a not-you loss on an abnormal post-start close with no EndMsg', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ matchId: 'm1', token: '2' }) }))
