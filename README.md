@@ -219,6 +219,48 @@ draw a frame.
 | `Q` / `Esc` | Quit (requires a second press to confirm) |
 | `Ctrl-C` | Quit instantly |
 
+## tankwait — terminal artillery duel
+
+**Game 6: tankwait** — a 1v1 turn-based artillery duel: aim an angle and
+power, fire a shell across the terrain, and try to land it on your opponent
+before they land one on you. Wind (an integer from -10 to 10) is rolled fresh
+each round and pushes shells sideways in flight, so the same angle/power pair
+won't always land in the same place. Each tank starts at 100 HP; a direct or
+splash hit chips HP down, and once a match reaches round 12, sudden death
+kicks in — every tank still standing loses 10 HP at the end of each round on
+top of combat damage, forcing a finish. Each turn runs on a 20s shot clock.
+Online PvP via matchmaking by default — the lobby gathers players and bots
+backfill if no opponent shows up. Offline play drops you straight into a
+match against a bot instead.
+
+### Standalone play
+
+```
+npx -y tankwait
+```
+
+Add `--offline` to skip matchmaking and play a local match against a bot
+only, `--name <handle>` to set your display name, and `--server <url>` to
+point at a self-hosted worker (tankwait's matchmaking shares the same
+Cloudflare Worker deployment as fragwait's deathmatch, checkwait's
+matchmaking, boomwait's matchmaking, snakewait's matchmaking, and
+blockwait's matchmaking).
+
+tankwait needs an 80×24 terminal at minimum — below that there's no room to
+draw a frame.
+
+### tankwait controls
+
+| Input | Action |
+|---|---|
+| `←`/`→` | Adjust angle by 1° (fine) |
+| `A`/`D` | Adjust angle by 5° (coarse) |
+| `↑`/`↓` | Adjust power by 1 (fine) |
+| `W`/`S` | Adjust power by 5 (coarse) |
+| `Space` / `Enter` | Fire |
+| `Q` / `Esc` | Quit (requires a second press to confirm) |
+| `Ctrl-C` | Quit instantly |
+
 ## How the Claude integration works
 
 `/games` is user-invoked only (`disable-model-invocation: true` — Claude

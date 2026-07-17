@@ -493,4 +493,110 @@ grep -qF "ARG:npx -y boomwait@0.1.3" "$RECORD" || fail "real pick 'bomber' did n
 [ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "real picks must not touch rotation state"
 echo "PASS: real-registry --pick blockwait + 'bomber' title alias pass pinned cmds through, rotation untouched"
 
+# ------------------------------------------------------------------------
+# Test 12: six-entry registry (fragwait + checkwait + boomwait + snakewait +
+# blockwait + tankwait, the shape games.json will have once tankwait ships in
+# Task 11) cycles 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 1 on consecutive launches, and
+# the tankwait pick's cmd (npx -y tankwait@0.1.0) passes through to the tmux
+# shim untouched. games.json itself is NOT touched by this task -- this is a
+# synthetic fixture standing in for the post-release registry. NOTE: the
+# @0.1.0 pin here is synthetic (this test's fixture only) -- the real version
+# pin for games.json lands at release time in Task 11, same as blockwait's
+# @0.1.1 pin was synthetic in Test 11 until Task 13 shipped it for real.
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cat > "$T_ROOT/games.json" <<'JSON'
+{"games":[
+  {"id":"fragwait","title":"fragwait — terminal FPS deathmatch","cmd":"npx -y fragwait@0.1.4"},
+  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.8"},
+  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.3"},
+  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.1"},
+  {"id":"blockwait","title":"blockwait — terminal block-stacking duel","cmd":"npx -y blockwait@0.1.1"},
+  {"id":"tankwait","title":"tankwait — terminal artillery duel","cmd":"npx -y tankwait@0.1.0"}
+]}
+JSON
+
+RECORD="$WORK/tmux_six_entry.txt"
+: > "$RECORD"
+OUT1=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT1" | grep -q "fragwait" || fail "six-entry rotation pick 1 expected fragwait, got: $OUT1"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 1 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT2=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT2" | grep -q "checkwait" || fail "six-entry rotation pick 2 expected checkwait, got: $OUT2"
+grep -q '"next":2' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 2 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT3=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT3" | grep -q "boomwait" || fail "six-entry rotation pick 3 expected boomwait, got: $OUT3"
+grep -q '"next":3' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 3 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT4=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT4" | grep -q "snakewait" || fail "six-entry rotation pick 4 expected snakewait, got: $OUT4"
+grep -q '"next":4' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 4 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT5=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT5" | grep -q "blockwait" || fail "six-entry rotation pick 5 expected blockwait, got: $OUT5"
+grep -q '"next":5' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 5 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+OUT6=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT6" | grep -q "tankwait" || fail "six-entry rotation pick 6 expected tankwait, got: $OUT6"
+grep -q '"next":6' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 6 unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+grep -qF "ARG:npx -y tankwait@0.1.0" "$RECORD" || fail "tmux shim did not receive the tankwait registry cmd: $(cat "$RECORD")"
+
+OUT7=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER")
+echo "$OUT7" | grep -q "fragwait" || fail "six-entry rotation pick 7 expected wraparound to fragwait, got: $OUT7"
+grep -q '"next":1' "$T_HOME/.fragwait/rotation.json" || fail "six-entry rotation state after pick 7 (wraparound) unexpected: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "PASS: synthetic fragwait/checkwait/boomwait/snakewait/blockwait/tankwait six-game registry cycles 1->2->3->4->5->6->1 with tankwait cmd passthrough"
+
+# ------------------------------------------------------------------------
+# Test 13: --pick tankwait on the six-entry fixture above -- exact id,
+# unique id prefix ('tank'), and unique title substring ('artillery', from
+# "tankwait — terminal artillery duel") all resolve to the tankwait entry
+# and pass its cmd through untouched, without ever creating/advancing
+# rotation state (same contract as the synthetic 3-game --pick suite above).
+# ------------------------------------------------------------------------
+T_HOME=$(mktemp -d)
+T_ROOT=$(mktemp -d)
+cat > "$T_ROOT/games.json" <<'JSON'
+{"games":[
+  {"id":"fragwait","title":"fragwait — terminal FPS deathmatch","cmd":"npx -y fragwait@0.1.4"},
+  {"id":"checkwait","title":"checkwait — terminal blitz chess","cmd":"npx -y checkwait@0.1.8"},
+  {"id":"boomwait","title":"boomwait — terminal bomber","cmd":"npx -y boomwait@0.1.3"},
+  {"id":"snakewait","title":"snakewait — terminal snake battle","cmd":"npx -y snakewait@0.1.1"},
+  {"id":"blockwait","title":"blockwait — terminal block-stacking duel","cmd":"npx -y blockwait@0.1.1"},
+  {"id":"tankwait","title":"tankwait — terminal artillery duel","cmd":"npx -y tankwait@0.1.0"}
+]}
+JSON
+
+RECORD="$WORK/tmux_pick_tankwait.txt"
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick tankwait)
+echo "$OUT" | grep -q "tankwait" || fail "pick exact id 'tankwait' expected tankwait, got: $OUT"
+grep -qF "ARG:npx -y tankwait@0.1.0" "$RECORD" || fail "pick exact id did not launch tankwait's cmd: $(cat "$RECORD")"
+[ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "pick exact id must not create/advance rotation state, found: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick tank)
+echo "$OUT" | grep -q "tankwait" || fail "pick unique id prefix 'tank' expected tankwait, got: $OUT"
+grep -qF "ARG:npx -y tankwait@0.1.0" "$RECORD" || fail "pick prefix 'tank' did not launch tankwait's cmd: $(cat "$RECORD")"
+[ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "pick prefix 'tank' must not create/advance rotation state, found: $(cat "$T_HOME/.fragwait/rotation.json")"
+
+: > "$RECORD"
+OUT=$(HOME="$T_HOME" CLAUDE_PLUGIN_ROOT="$T_ROOT" TMUX="fake" TMUX_RECORD_FILE="$RECORD" \
+  PATH="$SHIMS:$PATH" bash "$LAUNCHER" --pick artillery)
+echo "$OUT" | grep -q "tankwait" || fail "pick title substring 'artillery' expected tankwait, got: $OUT"
+grep -qF "ARG:npx -y tankwait@0.1.0" "$RECORD" || fail "pick title substring 'artillery' did not launch tankwait's cmd: $(cat "$RECORD")"
+[ ! -e "$T_HOME/.fragwait/rotation.json" ] || fail "pick title substring 'artillery' must not create/advance rotation state, found: $(cat "$T_HOME/.fragwait/rotation.json")"
+echo "PASS: --pick tankwait (exact id / 'tank' prefix / 'artillery' title substring) all resolve to tankwait, rotation untouched"
+
 echo "PASS: games-launch rotation + --pick + terminal-surface detection all behave"
