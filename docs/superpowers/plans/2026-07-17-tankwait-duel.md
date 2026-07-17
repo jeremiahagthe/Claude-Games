@@ -494,10 +494,6 @@ describe('bot gates (day one, never loosened)', () => {
       if (misses.length === 3) expect(misses[2]!, `seed ${seed}: ${misses}`).toBeLessThan(misses[0]! + 0.001)
     }
   })
-  it('golden hash unchanged by the bot module existing (bots stay out of the golden path)', () => {
-    // presence test only: importing bot.ts must not touch match/resolve behavior
-    expect(typeof botDecide).toBe('function')
-  })
 })
 ```
 
