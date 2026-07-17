@@ -1,6 +1,6 @@
 {
   "name": "tankwait-core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "tankwait artillery-duel rules engine: terrain, projectile physics, deterministic sim",
   "type": "module",
   "license": "MIT",

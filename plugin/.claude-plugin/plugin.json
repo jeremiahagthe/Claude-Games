@@ -1,7 +1,7 @@
 {
   "name": "games",
-  "version": "0.6.0",
-  "description": "Terminal games for Claude Code wait time \u2014 quick multiplayer matches against other waiting devs. /games rotates through the arcade; /play <game> launches a specific one. Game 1: fragwait, a terminal FPS deathmatch. Game 2: checkwait, terminal blitz chess. Game 3: boomwait, terminal bomber. Game 4: snakewait, terminal snake battle. Game 5: blockwait, terminal block-stacking duel.",
+  "version": "0.7.0",
+  "description": "Terminal games for Claude Code wait time \u2014 quick multiplayer matches against other waiting devs. /games rotates through the arcade; /play <game> launches a specific one. Game 1: fragwait, a terminal FPS deathmatch. Game 2: checkwait, terminal blitz chess. Game 3: boomwait, terminal bomber. Game 4: snakewait, terminal snake battle. Game 5: blockwait, terminal block-stacking duel. Game 6: tankwait, terminal artillery duel.",
   "author": {
     "name": "games contributors"
   },

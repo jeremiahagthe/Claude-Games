@@ -24,6 +24,11 @@
       "id": "blockwait",
       "title": "blockwait — terminal block-stacking duel",
       "cmd": "npx -y blockwait@0.1.1"
+    },
+    {
+      "id": "tankwait",
+      "title": "tankwait — terminal artillery duel",
+      "cmd": "npx -y tankwait@0.1.0"
     }
   ]
 }

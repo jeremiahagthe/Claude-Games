@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json --noEmit",
     "soak": "tsx scripts/soak.ts"
   },
-  "dependencies": { "fragwait-core": "0.1.1", "checkwait-core": "0.1.0", "boomwait-core": "0.1.2", "snakewait-core": "0.1.0", "blockwait-core": "0.1.0", "tankwait-core": "0.0.0" },
+  "dependencies": { "fragwait-core": "0.1.1", "checkwait-core": "0.1.0", "boomwait-core": "0.1.2", "snakewait-core": "0.1.0", "blockwait-core": "0.1.0", "tankwait-core": "0.1.0" },
   "devDependencies": {
     "wrangler": "4.107.0",
     "@cloudflare/workers-types": "5.20260706.1"
