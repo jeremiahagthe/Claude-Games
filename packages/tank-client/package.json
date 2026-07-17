@@ -1,0 +1,10 @@
+{
+  "name": "tankwait",
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "bin": { "tankwait": "bin/tankwait.js" },
+  "files": ["dist", "bin"],
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "dependencies": { "tankwait-core": "0.0.0", "termwait": "0.1.0", "ws": "8.21.0" }
+}
