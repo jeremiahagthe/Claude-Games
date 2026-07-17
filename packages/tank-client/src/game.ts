@@ -164,12 +164,21 @@ export function resultLine(result: Result, you: number, names?: string[]): strin
 // in scrollback ready to copy into a post) → exit. Never actually returns
 // (process.exit on every path) — callers declared to return Promise<Result> can
 // `return await teardownAndExit(...)` since `never` is assignable to any type.
+//
+// online.ts (Task 9) reuses this for its FATAL desync path: `errorText` +
+// `exitCode` 1 with a null finale restore the terminal cleanly, print a
+// diagnostic to stderr (post-restore, so it lands in the normal scrollback), and
+// exit nonzero — no share card, because the two boards provably diverged and
+// there is nothing honest to brag about. Both fields are optional and default to
+// the original share-card-on-exit-0 behaviour offline.ts relies on.
 export async function teardownAndExit(o: {
   term: TerminalSession
   parser: KeyParser
   listener: { close(): Promise<void> }
-  finale: { screen: string; shareText: string } | null // null = quit mid-match, nothing worth showing
+  finale: { screen: string; shareText: string } | null // null = quit mid-match / fatal, nothing to show
   beforeRestore?: () => void
+  errorText?: string // fatal diagnostic printed to stderr after restore (desync)
+  exitCode?: number // default 0; nonzero on a fatal teardown
 }): Promise<never> {
   if (o.finale) {
     o.term.write(o.finale.screen)
@@ -181,5 +190,6 @@ export async function teardownAndExit(o: {
   o.beforeRestore?.()
   o.term.restore()
   if (o.finale) process.stdout.write('\n' + o.finale.shareText)
-  process.exit(0)
+  if (o.errorText) process.stderr.write('\n' + o.errorText + '\n')
+  process.exit(o.exitCode ?? 0)
 }
