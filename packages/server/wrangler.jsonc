@@ -13,7 +13,9 @@
       { "name": "SNAKE_LOBBY", "class_name": "SnakeLobbyDO" },
       { "name": "SNAKE_MATCH", "class_name": "SnakeMatchDO" },
       { "name": "BLOCK_LOBBY", "class_name": "BlockLobbyDO" },
-      { "name": "BLOCK_MATCH", "class_name": "BlockMatchDO" }
+      { "name": "BLOCK_MATCH", "class_name": "BlockMatchDO" },
+      { "name": "TANK_LOBBY", "class_name": "TankLobbyDO" },
+      { "name": "TANK_MATCH", "class_name": "TankMatchDO" }
     ]
   },
   "migrations": [
@@ -22,6 +24,7 @@
     { "tag": "v3", "new_sqlite_classes": ["BomberLobbyDO", "BomberMatchDO"] },
     { "tag": "v4", "new_sqlite_classes": ["SnakeLobbyDO", "SnakeMatchDO"] },
     { "tag": "v5", "new_sqlite_classes": ["BlockLobbyDO", "BlockMatchDO"] },
-    { "tag": "v6", "new_sqlite_classes": ["BomberLobby2DO", "BomberMatch2DO"] }
+    { "tag": "v6", "new_sqlite_classes": ["BomberLobby2DO", "BomberMatch2DO"] },
+    { "tag": "v7", "new_sqlite_classes": ["TankLobbyDO", "TankMatchDO"] }
   ]
 }

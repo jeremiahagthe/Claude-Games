@@ -3,6 +3,7 @@ import { parseChessMatchId } from './chess-match.js'
 import { parseBomberMatchId } from './bomber-match.js'
 import { parseSnakeMatchId } from './snake-match.js'
 import { parseBlockMatchId } from './block-match.js'
+import { parseTankMatchId } from './tank-match.js'
 
 export interface Env {
   MATCH: DurableObjectNamespace
@@ -15,6 +16,8 @@ export interface Env {
   SNAKE_MATCH: DurableObjectNamespace
   BLOCK_LOBBY: DurableObjectNamespace
   BLOCK_MATCH: DurableObjectNamespace
+  TANK_LOBBY: DurableObjectNamespace
+  TANK_MATCH: DurableObjectNamespace
 }
 
 export default {
@@ -65,6 +68,15 @@ export default {
       return env.BLOCK_MATCH.get(env.BLOCK_MATCH.idFromString(blockMatchId)).fetch(req)
     }
 
+    // Tank routes: same shape as block's/snake's/bomber's/chess's, kept outside the shared router.
+    if (url.pathname === '/tank/join' && req.method === 'POST') {
+      return env.TANK_LOBBY.get(env.TANK_LOBBY.idFromName('tank')).fetch(req)
+    }
+    const tankMatchId = parseTankMatchId(url.pathname)
+    if (tankMatchId && req.method === 'GET') {
+      return env.TANK_MATCH.get(env.TANK_MATCH.idFromString(tankMatchId)).fetch(req)
+    }
+
     const r = route(url.pathname, req.method)
     if (!r) return new Response('not found', { status: 404 })
     if (r.kind === 'health') return new Response('fragwait-server ok')
@@ -86,3 +98,5 @@ export { SnakeLobbyDO } from './snake-lobby.js'
 export { SnakeMatchDO } from './snake-match.js'
 export { BlockLobbyDO } from './block-lobby.js'
 export { BlockMatchDO } from './block-match.js'
+export { TankLobbyDO } from './tank-lobby.js'
+export { TankMatchDO } from './tank-match.js'
