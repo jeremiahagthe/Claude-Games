@@ -1,0 +1,11 @@
+{
+  "name": "tankwait-core",
+  "version": "0.0.0",
+  "description": "tankwait artillery-duel rules engine: terrain, projectile physics, deterministic sim",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": { "build": "tsc -p tsconfig.json" }
+}
