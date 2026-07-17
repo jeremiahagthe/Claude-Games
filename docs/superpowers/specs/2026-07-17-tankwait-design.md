@@ -141,7 +141,8 @@ overshoots generously — undershoot and overshoot are both always possible.
   seeded spawn columns (left tank in SPAWN_L, right in SPAWN_R), spawn
   neighborhoods flattened (±SPAWN_FLAT_HALF cols to the tank's height),
   seeded first player, wind rolled for turn 1.
-- State: `heights: Float64Array(80)` (world y per column), per tank
+- State: `heights: number[]` (80 floats, world y per column — plain array
+  so the whole state JSON-stringifies for stateHash + golden), per tank
   {col, hp, lastAngle, lastPower, alive}, `turn` (0|1), `round`,
   `wind`, rng cursor, `result` (stamped once, never overwritten),
   stats per tank {damageDealt, shotsFired}.
