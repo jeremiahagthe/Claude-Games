@@ -147,6 +147,39 @@ describe('additional render tests', () => {
     }
   })
 
+  it('barrel ray: angle 90 during aim draws │ directly above your tank', () => {
+    const state = createMatch(7, ['jeremiah', 'rival'], [false, true])
+    const lines = frameLines(renderFrame(view({ state, aim: { angle: 90, power: 50 } }), chooseLayout(80, 24)!, 'mono'))
+    const t0 = state.tanks[0]!
+    const tankRow = screenRow(state.heights[t0.col]!)
+    // ray cells land above the tank's row on its own column
+    let found = 0
+    for (let row = 2; row < tankRow; row++) if (lines[row]![t0.col] === '│') found++
+    expect(found).toBeGreaterThan(0)
+  })
+
+  it('barrel ray: angle 60 draws ray cells up-and-right of the turret', () => {
+    const state = createMatch(7, ['jeremiah', 'rival'], [false, true])
+    const lines = frameLines(renderFrame(view({ state, aim: { angle: 60, power: 50 } }), chooseLayout(80, 24)!, 'mono'))
+    const t0 = state.tanks[0]!
+    const h = state.heights[t0.col]!
+    // first sample: muzzle (col, h+1) + 2.5*(cos60, sin60)
+    const x = Math.round(t0.col + 2.5 * Math.cos(Math.PI / 3))
+    const row = screenRow(h + 1 + 2.5 * Math.sin(Math.PI / 3))
+    expect(lines[row]![x]).toBe('╱')
+  })
+
+  it('barrel ray: absent during anim and wait phases', () => {
+    const state = createMatch(7, ['jeremiah', 'rival'], [false, true])
+    for (const over of [
+      { state, phase: 'anim' as const, clockMsLeft: null },
+      { state, phase: 'wait' as const },
+    ]) {
+      const frame = renderFrame(view(over), chooseLayout(80, 24)!, 'mono')
+      for (const g of ['│', '╱', '╲', '─']) expect(frame.includes(g), `${over.phase} ${g}`).toBe(false)
+    }
+  })
+
   it('clockMsLeft 14_000 renders 0:14', () => {
     const lines = frameLines(renderFrame(view({ clockMsLeft: 14_000 }), chooseLayout(80, 24)!, 'mono'))
     expect(lines[1]!.includes('0:14')).toBe(true)

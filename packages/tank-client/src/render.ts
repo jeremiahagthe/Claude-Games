@@ -106,6 +106,18 @@ function brightEscape(mode: ColorMode): string {
   return mode === 'mono' ? '' : `${ESC}[1m`
 }
 
+// --- barrel ray (aim indicator) ----------------------------------------------
+
+// Short 3-cell ray from the muzzle along the current aim angle, sampled at
+// fixed world distances. Glyph picked by 22.5° angle buckets.
+const RAY_DISTANCES = [2.5, 4.5, 6.5] as const
+
+function rayGlyph(angle: number): string {
+  if (angle <= 22.5 || angle >= 157.5) return '─'
+  if (angle >= 67.5 && angle <= 112.5) return '│'
+  return angle < 90 ? '╱' : '╲'
+}
+
 // --- cell grid: build the 21x80 terrain field, then overlay tanks/anim -------
 
 type Cell = { ch: string; wrap?: (mode: ColorMode) => [string, string] }
@@ -152,6 +164,26 @@ function buildField(v: RenderView, mode: ColorMode): string[][] {
     if (row >= FIELD_TOP_ROW && row <= FIELD_BOTTOM_ROW) {
       grid[rowIdx(row)]![c0] = cell(mode === 'mono' ? monoGlyph[0]! : glyph[0]!)
       if (c1 !== c0) grid[rowIdx(row)]![c1] = cell(mode === 'mono' ? monoGlyph[1]! : glyph[1]!)
+    }
+  }
+
+  // barrel ray: aim indicator, YOUR tank only, aim phase only (you never see
+  // the opponent's aim by design). Renderer-only — no core/physics involved.
+  if (v.phase === 'aim') {
+    const me = state.tanks[v.you]!
+    const muzzleY = state.heights[me.col]! + 1
+    const theta = (v.aim.angle * Math.PI) / 180
+    const glyph = rayGlyph(v.aim.angle)
+    for (const d of RAY_DISTANCES) {
+      const x = Math.round(me.col + d * Math.cos(theta))
+      const row = screenRow(muzzleY + d * Math.sin(theta))
+      if (x < 0 || x > 79 || row < FIELD_TOP_ROW || row > FIELD_BOTTOM_ROW) continue
+      if (grid[rowIdx(row)]![x]) continue // terrain/tank cells win — ray never overdraws solids
+      grid[rowIdx(row)]![x] = {
+        ch: glyph,
+        wrap: (m) =>
+          m === 'mono' ? ['', ''] : [`${dimEscape(m)}${colorEscape(m, TANK_RGB[v.you]!, TANK_256[v.you]!)}`, RESET],
+      }
     }
   }
 
