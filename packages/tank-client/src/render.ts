@@ -108,14 +108,20 @@ function brightEscape(mode: ColorMode): string {
 
 // --- barrel ray (aim indicator) ----------------------------------------------
 
-// Short 3-cell ray from the muzzle along the current aim angle, sampled at
-// fixed world distances. Glyph picked by 22.5° angle buckets.
-const RAY_DISTANCES = [2.5, 4.5, 6.5] as const
+// Contiguous screen-space DDA walk from the muzzle cell: direction is
+// dcol = cos θ, drow = -sin θ / 2 (one screen row = 2 world units, so the
+// vertical component is halved to keep the on-screen slope true), normalized
+// so each step advances exactly one cell in the dominant axis. Emits
+// RAY_CELLS contiguous cells; the glyph for each cell comes from the actual
+// step taken INTO it, so at mid angles the walk alternates diagonal and
+// straight cells — the correct chunky-grid rendering of a straight line.
+const RAY_CELLS = 4
+const RAY_MAX_STEPS = 8 // emit budget + slack for skipping the tank's own glyph cells
 
-function rayGlyph(angle: number): string {
-  if (angle <= 22.5 || angle >= 157.5) return '─'
-  if (angle >= 67.5 && angle <= 112.5) return '│'
-  return angle < 90 ? '╱' : '╲'
+function stepGlyph(dc: number, dr: number): string {
+  if (dr === 0) return '─'
+  if (dc === 0) return '│'
+  return dc > 0 ? '╱' : '╲' // angles 0..180 only ever step upward (dr < 0)
 }
 
 // --- cell grid: build the 21x80 terrain field, then overlay tanks/anim -------
@@ -171,16 +177,45 @@ function buildField(v: RenderView, mode: ColorMode): string[][] {
   // the opponent's aim by design). Renderer-only — no core/physics involved.
   if (v.phase === 'aim') {
     const me = state.tanks[v.you]!
-    const muzzleY = state.heights[me.col]! + 1
     const theta = (v.aim.angle * Math.PI) / 180
-    const glyph = rayGlyph(v.aim.angle)
-    for (const d of RAY_DISTANCES) {
-      const x = Math.round(me.col + d * Math.cos(theta))
-      const row = screenRow(muzzleY + d * Math.sin(theta))
-      if (x < 0 || x > 79 || row < FIELD_TOP_ROW || row > FIELD_BOTTOM_ROW) continue
-      if (grid[rowIdx(row)]![x]) continue // terrain/tank cells win — ray never overdraws solids
-      grid[rowIdx(row)]![x] = {
-        ch: glyph,
+    const dcol = Math.cos(theta)
+    const drow = -Math.sin(theta) / 2 // cell aspect: one screen row = 2 world units
+    const dominant = Math.max(Math.abs(dcol), Math.abs(drow))
+    const scol = dcol / dominant
+    const srow = drow / dominant
+    // own glyph cells: skipped without consuming the emit budget so the ray
+    // always starts in the cell just beyond the tank glyph
+    const tankRow = clampRow(screenRow(state.heights[me.col]!))
+    const ownCells = new Set([`${tankRow},${me.col}`, `${tankRow},${Math.min(79, me.col + 1)}`])
+    // walk starts at the muzzle cell in continuous screen coords
+    let fc = me.col
+    let fr = screenRow(state.heights[me.col]! + 1)
+    let prevC = Math.round(fc)
+    let prevR = Math.round(fr)
+    let emitted = 0
+    for (let step = 0; step <= RAY_MAX_STEPS && emitted < RAY_CELLS; step++) {
+      const c = Math.round(fc)
+      const r = Math.round(fr)
+      fc += scol
+      fr += srow
+      if (ownCells.has(`${r},${c}`)) continue // don't spend budget under the tank glyph
+      emitted++
+      // glyph from the step taken into this cell; ONLY the muzzle cell itself
+      // (reached by no step at all) borrows its outgoing step direction —
+      // genuine zero components of a real step must stay zero (a horizontal
+      // step inside a diagonal run renders ─, not a fake diagonal)
+      let dc = Math.sign(c - prevC)
+      let dr = Math.sign(r - prevR)
+      if (dc === 0 && dr === 0) {
+        dc = Math.sign(Math.round(fc) - c)
+        dr = Math.sign(Math.round(fr) - r)
+      }
+      prevC = c
+      prevR = r
+      if (c < 0 || c > 79 || r < FIELD_TOP_ROW || r > FIELD_BOTTOM_ROW) continue
+      if (grid[rowIdx(r)]![c]) continue // terrain/tank cells win — ray never overdraws solids
+      grid[rowIdx(r)]![c] = {
+        ch: stepGlyph(dc, dr),
         wrap: (m) =>
           m === 'mono' ? ['', ''] : [`${dimEscape(m)}${colorEscape(m, TANK_RGB[v.you]!, TANK_256[v.you]!)}`, RESET],
       }

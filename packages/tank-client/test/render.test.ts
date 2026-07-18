@@ -147,26 +147,43 @@ describe('additional render tests', () => {
     }
   })
 
-  it('barrel ray: angle 90 during aim draws │ directly above your tank', () => {
+  it('barrel ray: angle 90 during aim draws 4 │ cells stacked directly above your tank', () => {
     const state = createMatch(7, ['jeremiah', 'rival'], [false, true])
     const lines = frameLines(renderFrame(view({ state, aim: { angle: 90, power: 50 } }), chooseLayout(80, 24)!, 'mono'))
     const t0 = state.tanks[0]!
     const tankRow = screenRow(state.heights[t0.col]!)
-    // ray cells land above the tank's row on its own column
-    let found = 0
-    for (let row = 2; row < tankRow; row++) if (lines[row]![t0.col] === '│') found++
-    expect(found).toBeGreaterThan(0)
+    for (let i = 1; i <= 4; i++) {
+      expect(lines[tankRow - i]![t0.col], `row ${tankRow - i}`).toBe('│')
+    }
   })
 
-  it('barrel ray: angle 60 draws ray cells up-and-right of the turret', () => {
+  it('barrel ray: angle 58 emits a CONTIGUOUS path (8-neighborhood adjacency)', () => {
     const state = createMatch(7, ['jeremiah', 'rival'], [false, true])
-    const lines = frameLines(renderFrame(view({ state, aim: { angle: 60, power: 50 } }), chooseLayout(80, 24)!, 'mono'))
-    const t0 = state.tanks[0]!
-    const h = state.heights[t0.col]!
-    // first sample: muzzle (col, h+1) + 2.5*(cos60, sin60)
-    const x = Math.round(t0.col + 2.5 * Math.cos(Math.PI / 3))
-    const row = screenRow(h + 1 + 2.5 * Math.sin(Math.PI / 3))
-    expect(lines[row]![x]).toBe('╱')
+    const lines = frameLines(renderFrame(view({ state, aim: { angle: 58, power: 50 } }), chooseLayout(80, 24)!, 'mono'))
+    // collect every ray-glyph cell in the field
+    const cells: [number, number][] = []
+    const glyphs: string[] = []
+    for (let row = 2; row <= 22; row++) {
+      for (let col = 0; col < 80; col++) {
+        if ('─│╱╲'.includes(lines[row]![col]!)) {
+          cells.push([row, col])
+          glyphs.push(lines[row]![col]!)
+        }
+      }
+    }
+    expect(cells.length).toBe(4)
+    // per-step glyphs: a mid angle mixes diagonal and straight cells — the
+    // chunky-grid rendering of a straight line (never four identical ╱ with gaps)
+    expect(glyphs).toContain('╱')
+    expect(glyphs).toContain('─')
+    // path order: up-and-right — sort by row descending (upward), then col ascending
+    cells.sort((a, b) => (a[0] !== b[0] ? b[0] - a[0] : a[1] - b[1]))
+    for (let i = 1; i < cells.length; i++) {
+      const [r1, c1] = cells[i - 1]!
+      const [r2, c2] = cells[i]!
+      const adjacent = Math.abs(r2 - r1) <= 1 && Math.abs(c2 - c1) <= 1 && !(r1 === r2 && c1 === c2)
+      expect(adjacent, `cells ${i - 1}:${JSON.stringify(cells[i - 1])} -> ${i}:${JSON.stringify(cells[i])}`).toBe(true)
+    }
   })
 
   it('barrel ray: absent during anim and wait phases', () => {
